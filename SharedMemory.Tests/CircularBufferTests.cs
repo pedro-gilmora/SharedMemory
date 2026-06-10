@@ -45,11 +45,9 @@ namespace SharedMemoryTests
             string name = String.Empty;
             try
             {
-                using (var smr = new CircularBuffer(name, 2, 1))
-                {
-                    // Allowed String.Empty name
-                    Assert.Fail();
-                }
+                using var smr = new CircularBuffer(name, 2, 1);
+                // Allowed String.Empty name
+                Assert.Fail();
             }
             catch (ArgumentException ae)
             {
@@ -85,11 +83,9 @@ namespace SharedMemoryTests
             string name = Guid.NewGuid().ToString();
             try
             {
-                using (var smr = new CircularBuffer(name, 1, 1))
-                {
-                    // Allowed single element circular buffer
-                    Assert.Fail();
-                }
+                using var smr = new CircularBuffer(name, 1, 1);
+                // Allowed single element circular buffer
+                Assert.Fail();
             }
             catch (ArgumentOutOfRangeException aor)
             {
@@ -104,11 +100,9 @@ namespace SharedMemoryTests
             string name = Guid.NewGuid().ToString();
             try
             {
-                using (var smr = new CircularBuffer(name, 0, 1))
-                {
-                    // Allowed zero element circular buffer
-                    Assert.Fail();
-                }
+                using var smr = new CircularBuffer(name, 0, 1);
+                // Allowed zero element circular buffer
+                Assert.Fail();
             }
             catch (ArgumentOutOfRangeException aor)
             {
@@ -125,9 +119,7 @@ namespace SharedMemoryTests
         public void Constructor_Producer_True()
         {
             string name = Guid.NewGuid().ToString();
-            using (var smr = new CircularBuffer(name, 2, 1))
-            {
-            }
+            using var smr = new CircularBuffer(name, 2, 1);
         }
 
         [TestMethod]
@@ -136,9 +128,7 @@ namespace SharedMemoryTests
             string name = Guid.NewGuid().ToString();
             try
             {
-                using (var smr = new CircularBuffer(name))
-                {
-                }
+                using var smr = new CircularBuffer(name);
             }
             catch (System.IO.FileNotFoundException)
             {
@@ -153,10 +143,8 @@ namespace SharedMemoryTests
             string name = Guid.NewGuid().ToString();
             try
             {
-                using (var smr = new CircularBuffer(name, 2, 1))
-                using (var smr2 = new CircularBuffer(name, 2, 1))
-                {
-                }
+                using var smr = new CircularBuffer(name, 2, 1);
+                using var smr2 = new CircularBuffer(name, 2, 1);
             }
             catch (System.IO.IOException)
             {
@@ -169,24 +157,19 @@ namespace SharedMemoryTests
         public void Constructor_ProducerAndConsumer_True()
         {
             string name = Guid.NewGuid().ToString();
-            using (var producer = new CircularBuffer(name, 2, 1))
-            using (var consumer = new CircularBuffer(name))
-            {
-
-            }
+            using var producer = new CircularBuffer(name, 2, 1);
+            using var consumer = new CircularBuffer(name);
         }
 
         [TestMethod]
         public void Close_CheckShuttingDown_True()
         {
             string name = Guid.NewGuid().ToString();
-            using (var producer = new CircularBuffer(name, 2, 1))
-            using (var consumer = new CircularBuffer(name))
-            {
-                producer.Close();
+            using var producer = new CircularBuffer(name, 2, 1);
+            using var consumer = new CircularBuffer(name);
+            producer.Close();
 
-                Assert.IsTrue(consumer.ShuttingDown);
-            }
+            Assert.IsTrue(consumer.ShuttingDown);
         }
 
         [TestMethod]
@@ -200,9 +183,7 @@ namespace SharedMemoryTests
             string name = Guid.NewGuid().ToString();
             try
             {
-                using (var smr = new CircularBuffer(name, 6, int.MaxValue))
-                {
-                }
+                using var smr = new CircularBuffer(name, 6, int.MaxValue);
             }
             catch (System.IO.IOException)
             {
@@ -255,21 +236,19 @@ namespace SharedMemoryTests
 
             // Fill with random data
             r.NextBytes(data);
-            
-            using (var smr = new CircularBuffer(name, 2, bufSize))
-            {
-                Assert.AreEqual(bufSize, smr.Write(data), String.Format("Failed to write {0} bytes", bufSize));
-                Assert.AreEqual(bufSize, smr.Read(readBuf), String.Format("Failed to read {0} bytes", bufSize));
 
-                for (var i = 0; i < data.Length; i++)
-                    Assert.AreEqual(data[i], readBuf[i], String.Format("Data written does not match data read at index {0}", i));
+            using var smr = new CircularBuffer(name, 2, bufSize);
+            Assert.AreEqual(bufSize, smr.Write(data), String.Format("Failed to write {0} bytes", bufSize));
+            Assert.AreEqual(bufSize, smr.Read(readBuf), String.Format("Failed to read {0} bytes", bufSize));
 
-                CircularBuffer.NodeHeader header = smr.ReadNodeHeader();
-                Assert.AreEqual(1, header.WriteStart);
-                Assert.AreEqual(1, header.WriteEnd);
-                Assert.AreEqual(1, header.ReadStart);
-                Assert.AreEqual(1, header.ReadEnd);
-            }
+            for (var i = 0; i < data.Length; i++)
+                Assert.AreEqual(data[i], readBuf[i], String.Format("Data written does not match data read at index {0}", i));
+
+            CircularBuffer.NodeHeader header = smr.ReadNodeHeader();
+            Assert.AreEqual(1, header.WriteStart);
+            Assert.AreEqual(1, header.WriteEnd);
+            Assert.AreEqual(1, header.ReadStart);
+            Assert.AreEqual(1, header.ReadEnd);
         }
 
         /// <summary>
@@ -288,41 +267,40 @@ namespace SharedMemoryTests
             // Fill with random data
             r.NextBytes(data);
 
-            using (var smr = new CircularBuffer(name, 2, bufSize))
+            using var smr = new CircularBuffer(name, 2, bufSize);
+            header = smr.ReadNodeHeader();
+            Assert.AreEqual(0, header.WriteStart, "Initial WriteStart");
+            Assert.AreEqual(0, header.WriteEnd, "Intial WriteEnd");
+            Assert.AreEqual(0, header.ReadStart, "Initial ReadStart");
+            Assert.AreEqual(0, header.ReadEnd, "Initial ReadEnd");
+
+            Assert.AreEqual(bufSize, smr.Write((ptr) =>
             {
                 header = smr.ReadNodeHeader();
-                Assert.AreEqual(0, header.WriteStart, "Initial WriteStart");
-                Assert.AreEqual(0, header.WriteEnd, "Intial WriteEnd");
-                Assert.AreEqual(0, header.ReadStart, "Initial ReadStart");
-                Assert.AreEqual(0, header.ReadEnd, "Initial ReadEnd");
+                Assert.AreEqual(1, header.WriteStart, "During single write WriteStart");
+                Assert.AreEqual(0, header.WriteEnd, "During single write WriteEnd");
 
-                Assert.AreEqual(bufSize, smr.Write((ptr) => {
+                Marshal.Copy(data, 0, ptr, bufSize);
+                return data.Length;
+            }), String.Format("Failed to write {0} bytes", bufSize));
+
+            header = smr.ReadNodeHeader();
+            Assert.AreEqual(1, header.WriteStart, "After single write WriteStart");
+            Assert.AreEqual(1, header.WriteEnd, "After single write WriteEnd");
+
+            Assert.AreEqual(bufSize, smr.Read((ptr) =>
+                {
                     header = smr.ReadNodeHeader();
-                    Assert.AreEqual(1, header.WriteStart, "During single write WriteStart");
-                    Assert.AreEqual(0, header.WriteEnd, "During single write WriteEnd");
+                    Assert.AreEqual(1, header.ReadStart, "During single read ReadStart");
+                    Assert.AreEqual(0, header.ReadEnd, "During single read ReadEnd");
 
-                    Marshal.Copy(data, 0, ptr, bufSize);
-                    return data.Length;
-                }), String.Format("Failed to write {0} bytes", bufSize));
+                    Marshal.Copy(ptr, readBuf, 0, smr.NodeBufferSize);
+                    return smr.NodeBufferSize;
+                }), String.Format("Failed to read {0} bytes", bufSize));
 
-                header = smr.ReadNodeHeader();
-                Assert.AreEqual(1, header.WriteStart, "After single write WriteStart");
-                Assert.AreEqual(1, header.WriteEnd, "After single write WriteEnd");
-
-                Assert.AreEqual(bufSize, smr.Read((ptr) =>
-                    {
-                        header = smr.ReadNodeHeader();
-                        Assert.AreEqual(1, header.ReadStart, "During single read ReadStart");
-                        Assert.AreEqual(0, header.ReadEnd, "During single read ReadEnd");
-
-                        Marshal.Copy(ptr, readBuf, 0, smr.NodeBufferSize);
-                        return smr.NodeBufferSize;
-                    }), String.Format("Failed to read {0} bytes", bufSize));
-
-                header = smr.ReadNodeHeader();
-                Assert.AreEqual(1, header.ReadStart, "After single read ReadStart");
-                Assert.AreEqual(1, header.ReadEnd, "After single read ReadEnd");
-            }
+            header = smr.ReadNodeHeader();
+            Assert.AreEqual(1, header.ReadStart, "After single read ReadStart");
+            Assert.AreEqual(1, header.ReadEnd, "After single read ReadEnd");
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -340,30 +318,28 @@ namespace SharedMemoryTests
             string name = Guid.NewGuid().ToString();
             int nodeSize = Marshal.SizeOf(typeof(MyTestStruct));
 
-            using (var smr = new CircularBuffer(name, 2, nodeSize))
-            using (var sm2 = new CircularBuffer(name))
+            using var smr = new CircularBuffer(name, 2, nodeSize);
+            using var sm2 = new CircularBuffer(name);
+            MyTestStruct obj = new MyTestStruct
             {
-                MyTestStruct obj = new MyTestStruct
-                {
-                    Prop1 = 1,
-                    Prop2 = 2,
-                    Prop3 = 3,
-                    Prop4 = 4
-                };
+                Prop1 = 1,
+                Prop2 = 2,
+                Prop3 = 3,
+                Prop4 = 4
+            };
 
-                smr.Write(ref obj);
+            smr.Write(ref obj);
 
-                MyTestStruct read;
-                int bytesRead = sm2.Read(out read);
-                if (bytesRead > 0)
-                {
-                    Assert.AreEqual(FastStructure.SizeOf<MyTestStruct>(), bytesRead);
-                    Assert.AreEqual(obj, read);
-                }
-                else
-                {
-                    Assert.Fail();
-                }
+            MyTestStruct read;
+            int bytesRead = sm2.Read(out read);
+            if (bytesRead > 0)
+            {
+                Assert.AreEqual(FastStructure<MyTestStruct>.Size, bytesRead);
+                Assert.AreEqual(obj, read);
+            }
+            else
+            {
+                Assert.Fail();
             }
         }
 
@@ -385,17 +361,15 @@ namespace SharedMemoryTests
                 r.NextBytes(data[i]);
             }
 
-            using (var smr = new CircularBuffer(name, 2, bufSize))
+            using var smr = new CircularBuffer(name, 2, bufSize);
+            for (var iteration = 0; iteration < iterations; iteration++)
             {
-                for (var iteration = 0; iteration < iterations; iteration++)
-                {
-                    writeBuf = data[iteration];
-                    Assert.AreEqual(bufSize, smr.Write(writeBuf), String.Format("Failed to write {0} bytes", bufSize));
-                    Assert.AreEqual(bufSize, smr.Read(readBuf), String.Format("Failed to read {0} bytes", bufSize));
+                writeBuf = data[iteration];
+                Assert.AreEqual(bufSize, smr.Write(writeBuf), String.Format("Failed to write {0} bytes", bufSize));
+                Assert.AreEqual(bufSize, smr.Read(readBuf), String.Format("Failed to read {0} bytes", bufSize));
 
-                    for (var i = 0; i < writeBuf.Length; i++)
-                        Assert.AreEqual(writeBuf[i], readBuf[i], String.Format("Data written does not match data read at index {0}", i));
-                }
+                for (var i = 0; i < writeBuf.Length; i++)
+                    Assert.AreEqual(writeBuf[i], readBuf[i], String.Format("Data written does not match data read at index {0}", i));
             }
         }
 
@@ -491,28 +465,26 @@ namespace SharedMemoryTests
                 r.NextBytes(data[i]);
             }
 
-            using (var producer = new CircularBuffer(name, 2, bufSize))
-            using (var consumer = new CircularBuffer(name))
+            using var producer = new CircularBuffer(name, 2, bufSize);
+            using var consumer = new CircularBuffer(name);
+            Action writer = () =>
             {
-                Action writer = () =>
-                {
-                    long totalBytesWritten = WriteMultiple(producer, data, out timeouts);
-                    Assert.AreEqual(totalBytesWritten, iterations * bufSize, "Failed to write all bytes");
-                };
+                long totalBytesWritten = WriteMultiple(producer, data, out timeouts);
+                Assert.AreEqual(totalBytesWritten, iterations * bufSize, "Failed to write all bytes");
+            };
 
-                Action reader = () =>
-                {
-                    long totalBytesRead = ReadMultipleWithCheck(consumer, data, out timeouts);
-                    Assert.AreEqual(totalBytesRead, iterations * bufSize, "Failed to read all bytes");
-                };
+            Action reader = () =>
+            {
+                long totalBytesRead = ReadMultipleWithCheck(consumer, data, out timeouts);
+                Assert.AreEqual(totalBytesRead, iterations * bufSize, "Failed to read all bytes");
+            };
 
-                Task tWriter = Task.Factory.StartNew(writer);
-                Task tReader = Task.Factory.StartNew(reader);
+            Task tWriter = Task.Factory.StartNew(writer);
+            Task tReader = Task.Factory.StartNew(reader);
 
-                if (!Task.WaitAll(new Task[] { tWriter, tReader }, 5000))
-                {
-                    Assert.Fail("Reader or writer took too long");
-                }
+            if (!Task.WaitAll([tWriter, tReader], 5000))
+            {
+                Assert.Fail("Reader or writer took too long");
             }
         }
 
@@ -535,29 +507,27 @@ namespace SharedMemoryTests
                 r.NextBytes(data[i]);
             }
 
-            using (var producer = new CircularBuffer(name, 2, bufSize))
-            using (var consumer = new CircularBuffer(name))
+            using var producer = new CircularBuffer(name, 2, bufSize);
+            using var consumer = new CircularBuffer(name);
+            Action writer = () =>
             {
-                Action writer = () =>
-                {
-                    int writeTimeouts = 0;
-                    long totalBytesWritten = WriteMultiple(producer, data, out writeTimeouts, 0, 1);
-                    Assert.IsTrue(writeTimeouts > 0);
-                };
+                int writeTimeouts = 0;
+                long totalBytesWritten = WriteMultiple(producer, data, out writeTimeouts, 0, 1);
+                Assert.IsTrue(writeTimeouts > 0);
+            };
 
-                Action reader = () =>
-                {
-                    int readTimeouts = 0;
-                    long totalBytesRead = ReadMultipleWithCheck(consumer, data, out readTimeouts, 1);
-                };
+            Action reader = () =>
+            {
+                int readTimeouts = 0;
+                long totalBytesRead = ReadMultipleWithCheck(consumer, data, out readTimeouts, 1);
+            };
 
-                Task tWriter = Task.Factory.StartNew(writer);
-                Task tReader = Task.Factory.StartNew(reader);
+            Task tWriter = Task.Factory.StartNew(writer);
+            Task tReader = Task.Factory.StartNew(reader);
 
-                if (!Task.WaitAll(new Task[] { tWriter, tReader }, 5000))
-                {
-                    Assert.Fail("Reader or writer took too long");
-                }
+            if (!Task.WaitAll([tWriter, tReader], 5000))
+            {
+                Assert.Fail("Reader or writer took too long");
             }
         }
 
@@ -580,31 +550,29 @@ namespace SharedMemoryTests
                 r.NextBytes(data[i]);
             }
 
-            using (var producer = new CircularBuffer(name, 2, bufSize))
-            using (var consumer = new CircularBuffer(name))
+            using var producer = new CircularBuffer(name, 2, bufSize);
+            using var consumer = new CircularBuffer(name);
+            Action writer = () =>
             {
-                Action writer = () =>
-                {
-                    int writeTimeouts = 0;
-                    long totalBytesWritten = WriteMultiple(producer, data, out writeTimeouts, 1);
-                };
+                int writeTimeouts = 0;
+                long totalBytesWritten = WriteMultiple(producer, data, out writeTimeouts, 1);
+            };
 
-                Action reader = () =>
-                {
-                    int readTimeouts = 0;
-                    long totalBytesRead = ReadMultiple(consumer, data, out readTimeouts, 0, 1);
-                    Assert.IsTrue(readTimeouts > 0);
-                };
+            Action reader = () =>
+            {
+                int readTimeouts = 0;
+                long totalBytesRead = ReadMultiple(consumer, data, out readTimeouts, 0, 1);
+                Assert.IsTrue(readTimeouts > 0);
+            };
 
-                Task tWriter = Task.Factory.StartNew(writer);
-                Task tReader = Task.Factory.StartNew(reader);
+            Task tWriter = Task.Factory.StartNew(writer);
+            Task tReader = Task.Factory.StartNew(reader);
 
-                //Task.WaitAll(tReader, tWriter);
+            //Task.WaitAll(tReader, tWriter);
 
-                if (!Task.WaitAll(new Task[] { tWriter, tReader }, 10000))
-                {
-                    Assert.Fail("Reader or writer took too long");
-                }
+            if (!Task.WaitAll([tWriter, tReader], 10000))
+            {
+                Assert.Fail("Reader or writer took too long");
             }
         }
 
@@ -630,90 +598,88 @@ namespace SharedMemoryTests
             // Fill with random data
             r.NextBytes(data);
 
-            using (var smr = new CircularBuffer(name, 5, bufSize))
+            using var smr = new CircularBuffer(name, 5, bufSize);
+            header = smr.ReadNodeHeader();
+            Assert.AreEqual(0, header.WriteStart, "Initial WriteStart");
+            Assert.AreEqual(0, header.WriteEnd, "Intial WriteEnd");
+            Assert.AreEqual(0, header.ReadStart, "Initial ReadStart");
+            Assert.AreEqual(0, header.ReadEnd, "Initial ReadEnd");
+
+            Assert.AreEqual(bufSize, smr.Write((ptr) =>
             {
                 header = smr.ReadNodeHeader();
-                Assert.AreEqual(0, header.WriteStart, "Initial WriteStart");
-                Assert.AreEqual(0, header.WriteEnd, "Intial WriteEnd");
-                Assert.AreEqual(0, header.ReadStart, "Initial ReadStart");
-                Assert.AreEqual(0, header.ReadEnd, "Initial ReadEnd");
+                Assert.AreEqual(1, header.WriteStart, "During nested out of order write (1) WriteStart");
+                Assert.AreEqual(0, header.WriteEnd, "During nested out of order write (1) WriteEnd");
 
-                Assert.AreEqual(bufSize, smr.Write((ptr) =>
+                smr.Write((ptr2) =>
                 {
                     header = smr.ReadNodeHeader();
-                    Assert.AreEqual(1, header.WriteStart, "During nested out of order write (1) WriteStart");
-                    Assert.AreEqual(0, header.WriteEnd, "During nested out of order write (1) WriteEnd");
+                    Assert.AreEqual(2, header.WriteStart, "During nested out of order write (2) WriteStart");
+                    Assert.AreEqual(0, header.WriteEnd, "During nested out of order write (2) WriteEnd");
 
-                    smr.Write((ptr2) =>
+                    smr.Write((ptr3) =>
                     {
                         header = smr.ReadNodeHeader();
-                        Assert.AreEqual(2, header.WriteStart, "During nested out of order write (2) WriteStart");
-                        Assert.AreEqual(0, header.WriteEnd, "During nested out of order write (2) WriteEnd");
+                        Assert.AreEqual(3, header.WriteStart, "During nested out of order write (3) WriteStart");
+                        Assert.AreEqual(0, header.WriteEnd, "During nested out of order write (3) WriteEnd");
 
-                        smr.Write((ptr3) =>
-                        {
-                            header = smr.ReadNodeHeader();
-                            Assert.AreEqual(3, header.WriteStart, "During nested out of order write (3) WriteStart");
-                            Assert.AreEqual(0, header.WriteEnd, "During nested out of order write (3) WriteEnd");
-
-                            Marshal.Copy(data, 0, ptr3, bufSize);
-                            return bufSize;
-                        });
-                        header = smr.ReadNodeHeader();
-                        Assert.AreEqual(0, header.WriteEnd, "After nested out of order write (3) WriteEnd");
-
-                        Marshal.Copy(data, 0, ptr2, bufSize);
+                        Marshal.Copy(data, 0, ptr3, bufSize);
                         return bufSize;
                     });
                     header = smr.ReadNodeHeader();
-                    Assert.AreEqual(0, header.WriteEnd, "After nested out of order write (2) WriteEnd");
+                    Assert.AreEqual(0, header.WriteEnd, "After nested out of order write (3) WriteEnd");
 
-                    Marshal.Copy(data, 0, ptr, bufSize);
-                    return data.Length;
-                }), String.Format("Failed to write {0} bytes", bufSize));
-
+                    Marshal.Copy(data, 0, ptr2, bufSize);
+                    return bufSize;
+                });
                 header = smr.ReadNodeHeader();
-                Assert.AreEqual(3, header.WriteStart, "After nested out of order writes (1,2,3) WriteStart");
-                Assert.AreEqual(3, header.WriteEnd, "After nested out of order writes (1,2,3) WriteEnd");
+                Assert.AreEqual(0, header.WriteEnd, "After nested out of order write (2) WriteEnd");
 
-                Assert.AreEqual(bufSize, smr.Read((ptr) =>
+                Marshal.Copy(data, 0, ptr, bufSize);
+                return data.Length;
+            }), String.Format("Failed to write {0} bytes", bufSize));
+
+            header = smr.ReadNodeHeader();
+            Assert.AreEqual(3, header.WriteStart, "After nested out of order writes (1,2,3) WriteStart");
+            Assert.AreEqual(3, header.WriteEnd, "After nested out of order writes (1,2,3) WriteEnd");
+
+            Assert.AreEqual(bufSize, smr.Read((ptr) =>
+            {
+                header = smr.ReadNodeHeader();
+                Assert.AreEqual(1, header.ReadStart, "During nested out of order read (1) ReadStart");
+                Assert.AreEqual(0, header.ReadEnd, "During nested out of order read (1) ReadEnd");
+
+                smr.Read((ptr2) =>
                 {
                     header = smr.ReadNodeHeader();
-                    Assert.AreEqual(1, header.ReadStart, "During nested out of order read (1) ReadStart");
-                    Assert.AreEqual(0, header.ReadEnd, "During nested out of order read (1) ReadEnd");
+                    Assert.AreEqual(2, header.ReadStart, "During nested out of order read (2) ReadStart");
+                    Assert.AreEqual(0, header.ReadEnd, "During nested out of order read (2) ReadEnd");
 
-                    smr.Read((ptr2) =>
+                    smr.Read((ptr3) =>
                     {
                         header = smr.ReadNodeHeader();
-                        Assert.AreEqual(2, header.ReadStart, "During nested out of order read (2) ReadStart");
-                        Assert.AreEqual(0, header.ReadEnd, "During nested out of order read (2) ReadEnd");
+                        Assert.AreEqual(3, header.ReadStart, "During nested out of order read (3) ReadStart");
+                        Assert.AreEqual(0, header.ReadEnd, "During nested out of order read (3) ReadEnd");
 
-                        smr.Read((ptr3) =>
-                        {
-                            header = smr.ReadNodeHeader();
-                            Assert.AreEqual(3, header.ReadStart, "During nested out of order read (3) ReadStart");
-                            Assert.AreEqual(0, header.ReadEnd, "During nested out of order read (3) ReadEnd");
-
-                            Marshal.Copy(ptr3, readBuf, 0, smr.NodeBufferSize);
-                            return smr.NodeBufferSize;
-                        });
-                        header = smr.ReadNodeHeader();
-                        Assert.AreEqual(0, header.ReadEnd, "After nested out of order read (3) ReadEnd");
-
-                        Marshal.Copy(ptr2, readBuf, 0, smr.NodeBufferSize);
+                        Marshal.Copy(ptr3, readBuf, 0, smr.NodeBufferSize);
                         return smr.NodeBufferSize;
                     });
                     header = smr.ReadNodeHeader();
-                    Assert.AreEqual(0, header.ReadEnd, "After nested out of order read (2) ReadEnd");
+                    Assert.AreEqual(0, header.ReadEnd, "After nested out of order read (3) ReadEnd");
 
-                    Marshal.Copy(ptr, readBuf, 0, smr.NodeBufferSize);
+                    Marshal.Copy(ptr2, readBuf, 0, smr.NodeBufferSize);
                     return smr.NodeBufferSize;
-                }), String.Format("Failed to read {0} bytes", bufSize));
-
+                });
                 header = smr.ReadNodeHeader();
-                Assert.AreEqual(3, header.ReadStart, "After nested out of order read (1,2,3) ReadStart");
-                Assert.AreEqual(3, header.ReadEnd, "After nested out of order read (1,2,3) ReadEnd");
-            }
+                Assert.AreEqual(0, header.ReadEnd, "After nested out of order read (2) ReadEnd");
+
+                Marshal.Copy(ptr, readBuf, 0, smr.NodeBufferSize);
+                return smr.NodeBufferSize;
+            }), String.Format("Failed to read {0} bytes", bufSize));
+
+            header = smr.ReadNodeHeader();
+            Assert.AreEqual(3, header.ReadStart, "After nested out of order read (1,2,3) ReadStart");
+            Assert.AreEqual(3, header.ReadEnd, "After nested out of order read (1,2,3) ReadEnd");
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -739,17 +705,16 @@ namespace SharedMemoryTests
                 data[i].Value2 = r.Next();
             }
 
-            using (var smr = new CircularBuffer(name, 2, bufSize))
-            {
-                var writeCount = smr.Write(data);
-                var readCount = smr.Read(readBuff);
+            using var smr = new CircularBuffer(name, 2, bufSize);
 
-                Assert.AreEqual(100, writeCount);
-                Assert.AreEqual(100, readCount);
+            var writeCount = smr.Write(data);
+            var readCount = smr.Read(readBuff);
 
-                for (var i = 0; i < data.Length; i++)
-                    Assert.AreEqual(data[i], readBuff[i], String.Format("Data written does not match data read at index {0}", i));
-            }
+            Assert.AreEqual(100, writeCount);
+            Assert.AreEqual(100, readCount);
+
+            for (var i = 0; i < data.Length; i++)
+                Assert.AreEqual(data[i], readBuff[i], $"Data written does not match data read at index {i}");
         }
 
         [TestMethod]
@@ -772,25 +737,23 @@ namespace SharedMemoryTests
 
             // Tests that writing to the circular buffer using startIndex will correctly write and read the entire
             // source array, even though its size in bytes is not evenly divisible by the buffer size.
-            using (var smr = new CircularBuffer(name, 2, bufSize))
+            using var smr = new CircularBuffer(name, 2, bufSize);
+            var totalWriteCount = 0;
+            var iterations = 0;
+            while (totalWriteCount < data.Length)
             {
-                var totalWriteCount = 0;
-                var iterations = 0;
-                while (totalWriteCount < data.Length)
-                {
-                    var writeCount = smr.Write(data, startIndex: totalWriteCount);
-                    var readCount = smr.Read(readBuff, startIndex: totalWriteCount);
+                var writeCount = smr.Write(data, startIndex: totalWriteCount);
+                var readCount = smr.Read(readBuff, startIndex: totalWriteCount);
 
-                    Assert.AreEqual(writeCount, readCount);
+                Assert.AreEqual(writeCount, readCount);
 
-                    totalWriteCount += writeCount;
-                    iterations++;
-                }
-                Assert.AreEqual(Math.Ceiling((double)(data.Length * Marshal.SizeOf(typeof(TestStruct))) / bufSize), iterations);
-                Assert.AreEqual(data.Length, totalWriteCount);
-                for (var i = 0; i < totalWriteCount; i++)
-                    Assert.AreEqual(data[i], readBuff[i], String.Format("Data written does not match data read at index {0}", i));
+                totalWriteCount += writeCount;
+                iterations++;
             }
+            Assert.AreEqual(Math.Ceiling((double)(data.Length * Marshal.SizeOf(typeof(TestStruct))) / bufSize), iterations);
+            Assert.AreEqual(data.Length, totalWriteCount);
+            for (var i = 0; i < totalWriteCount; i++)
+                Assert.AreEqual(data[i], readBuff[i], String.Format("Data written does not match data read at index {0}", i));
         }
 
         [TestMethod]
@@ -811,23 +774,21 @@ namespace SharedMemoryTests
                 r.NextBytes(data[i]);
             }
 
-            using (var smr = new CircularBuffer(name, 2, bufSize))
+            using var smr = new CircularBuffer(name, 2, bufSize);
+            for (var iteration = 0; iteration < iterations; iteration++)
             {
-                for (var iteration = 0; iteration < iterations; iteration++)
+                writeBuf = data[iteration];
+                fixed (byte* wPtr = &writeBuf[0])
                 {
-                    writeBuf = data[iteration];
-                    fixed (byte* wPtr = &writeBuf[0])
-                    {
-                        Assert.AreEqual(bufSize, smr.Write((IntPtr)wPtr, bufSize), String.Format("Failed to write {0} bytes", bufSize));
-                    }
-                    fixed (byte* rPtr = &readBuf[0])
-                    {
-                        Assert.AreEqual(bufSize, smr.Read((IntPtr)rPtr, bufSize), String.Format("Failed to write {0} bytes", bufSize));
-                    }
-
-                    for (var i = 0; i < writeBuf.Length; i++)
-                        Assert.AreEqual(writeBuf[i], readBuf[i], String.Format("Data written does not match data read at index {0}", i));
+                    Assert.AreEqual(bufSize, smr.Write((IntPtr)wPtr, bufSize), String.Format("Failed to write {0} bytes", bufSize));
                 }
+                fixed (byte* rPtr = &readBuf[0])
+                {
+                    Assert.AreEqual(bufSize, smr.Read((IntPtr)rPtr, bufSize), String.Format("Failed to write {0} bytes", bufSize));
+                }
+
+                for (var i = 0; i < writeBuf.Length; i++)
+                    Assert.AreEqual(writeBuf[i], readBuf[i], String.Format("Data written does not match data read at index {0}", i));
             }
         }
 
@@ -876,17 +837,15 @@ namespace SharedMemoryTests
                 return readBuf.Length;
             };
 
-            using (var smr = new CircularBuffer(name, 2, bufSize))
+            using var smr = new CircularBuffer(name, 2, bufSize);
+            for (var iteration = 0; iteration < iterations; iteration++)
             {
-                for (var iteration = 0; iteration < iterations; iteration++)
-                {
-                    writeBuf = data[iteration];
-                    Assert.AreEqual(bufSize, smr.Write(writeFunc), String.Format("Failed to write {0} bytes", bufSize));
-                    Assert.AreEqual(bufSize, smr.Read(readFunc), String.Format("Failed to write {0} bytes", bufSize));
+                writeBuf = data[iteration];
+                Assert.AreEqual(bufSize, smr.Write(writeFunc), String.Format("Failed to write {0} bytes", bufSize));
+                Assert.AreEqual(bufSize, smr.Read(readFunc), String.Format("Failed to write {0} bytes", bufSize));
 
-                    for (var i = 0; i < writeBuf.Length; i++)
-                        Assert.AreEqual(writeBuf[i], readBuf[i], String.Format("Data written does not match data read at index {0}", i));
-                }
+                for (var i = 0; i < writeBuf.Length; i++)
+                    Assert.AreEqual(writeBuf[i], readBuf[i], String.Format("Data written does not match data read at index {0}", i));
             }
         }
 

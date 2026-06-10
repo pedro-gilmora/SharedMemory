@@ -140,7 +140,7 @@ namespace SharedMemoryTests
         [TestMethod]
         public void FastStructure_AllocHGlobalReadWrite()
         {
-            IntPtr mem = Marshal.AllocHGlobal(FastStructure.SizeOf<ComplexStructure>());
+            IntPtr mem = Marshal.AllocHGlobal(FastStructure<ComplexStructure>.Size);
 
             ComplexStructure n = new ComplexStructure();
 
@@ -155,7 +155,7 @@ namespace SharedMemoryTests
                 n.Compatible.Contents[7] = 5;
             }
 
-            FastStructure.StructureToPtr(ref n, mem);
+            n.ToPointer(mem);
 
             // Assert that the reading and writing result in same structure
             ComplexStructure m = FastStructure.PtrToStructure<ComplexStructure>(mem);

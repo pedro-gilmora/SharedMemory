@@ -39,7 +39,7 @@ namespace SharedMemory
 #if NETFULL
     [PermissionSet(SecurityAction.LinkDemand)]
 #endif
-    public unsafe class BufferReadWrite : BufferWithLocks
+    public class BufferReadWrite : BufferWithLocks
     {
         #region Constructors
 
@@ -145,29 +145,6 @@ namespace SharedMemory
             where T : struct
         {
             base.Read(buffer, bufferPosition);
-        }
-
-        /// <summary>
-        /// Reads <paramref name="length"/> bytes into the memory location <paramref name="destination"/> from the shared memory buffer.
-        /// </summary>
-        /// <param name="destination">A managed pointer to the memory location to copy data into from the buffer</param>
-        /// <param name="length">The number of bytes to be copied</param>
-        /// <param name="bufferPosition">The offset within the buffer region of the shared memory to read from.</param>
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Design", "CA1061:DoNotHideBaseClassMethods")]
-        new public void Read(IntPtr destination, int length, long bufferPosition = 0)
-        {
-            base.Read(destination, length, bufferPosition);
-        }
-
-        /// <summary>
-        /// Prepares an IntPtr to the buffer position and calls <paramref name="readFunc"/> to perform the reading.
-        /// </summary>
-        /// <param name="readFunc">A function used to read from the buffer. The IntPtr parameter is a pointer to the buffer offset by <paramref name="bufferPosition"/>.</param>
-        /// <param name="bufferPosition">The offset within the buffer region of the shared memory to read from.</param>
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Design", "CA1061:DoNotHideBaseClassMethods")]
-        new public void Read(Action<IntPtr> readFunc, long bufferPosition = 0)
-        {
-            base.Read(readFunc, bufferPosition);
         }
 
         #endregion

@@ -30,6 +30,8 @@ namespace SharedMemory
     // Only supported in .NET 4.5+ and .NET Standard 2.0
 
     using System.Collections.Concurrent;
+    using System.IO;
+    using System.Runtime.InteropServices;
     using System.Threading;
     using System.Threading.Tasks;
 
@@ -116,7 +118,7 @@ namespace SharedMemory
             using (var cancelTaskSource = new RpcResponseCancellationTokenTaskSource(cancellationToken))
                 return await (await Task.WhenAny(task, cancelTaskSource.Task).ConfigureAwait(false)).ConfigureAwait(false);
         }
-        
+
         /// <summary>
         /// Holds the task for a cancellation token, as well as the token registration. The registration is disposed when this instance is disposed.
         /// </summary>
@@ -125,7 +127,7 @@ namespace SharedMemory
             /// <summary>
             /// The cancellation token registration, if any. This is <c>null</c> if the registration was not necessary.
             /// </summary>
-            private readonly IDisposable _registration;
+            private readonly IDisposable? _registration;
 
             /// <summary>
             /// Creates a task for the specified cancellation token, registering with the token if necessary.
@@ -225,7 +227,7 @@ namespace SharedMemory
         /// <summary>
         /// The message payload (if any)
         /// </summary>
-        public byte[] Data { get; set; }
+        public byte[] Data { get; set; } = null!;
         /// <summary>
         /// A wait event that is signaled when a response is ready
         /// </summary>
@@ -243,28 +245,23 @@ namespace SharedMemory
     /// <summary>
     /// Represents the result of a remote request.
     /// </summary>
-    public class RpcResponse
+    /// <remarks>
+    /// Constructs an RpcResponse
+    /// </remarks>
+    /// <param name="success">was it a success</param>
+    /// <param name="data">the message data (if any)</param>
+    public class RpcResponse(bool success, byte[]? data)
     {
-        /// <summary>
-        /// Constructs an RpcResponse
-        /// </summary>
-        /// <param name="success">was it a success</param>
-        /// <param name="data">the message data (if any)</param>
-        public RpcResponse(bool success, byte[] data)
-        {
-            this.Success = success;
-            this.Data = data;
-        }
 
         /// <summary>
         /// If the request was successful
         /// </summary>
-        public bool Success { get; }
+        public bool Success { get; } = success;
 
         /// <summary>
         /// The returned result (if applicable)
         /// </summary>
-        public byte[] Data { get; }
+        public byte[]? Data { get; } = data;
     }
 
     /// <summary>
@@ -578,10 +575,10 @@ namespace SharedMemory
         /// </summary>
         protected ConcurrentDictionary<ulong, RpcRequest> IncomingRequests { get; } = new ConcurrentDictionary<ulong, RpcRequest>();
 
-        Action<ulong, byte[]> RemoteCallHandler = null;
-        Func<ulong, byte[], Task> AsyncRemoteCallHandler = null;
-        Func<ulong, byte[], byte[]> RemoteCallHandlerWithResult = null;
-        Func<ulong, byte[], Task<byte[]>> AsyncRemoteCallHandlerWithResult = null;
+        Action<ulong, byte[]>? RemoteCallHandler = null;
+        Func<ulong, byte[], Task>? AsyncRemoteCallHandler = null;
+        Func<ulong, byte[], byte[]>? RemoteCallHandlerWithResult = null;
+        Func<ulong, byte[], Task<byte[]>>? AsyncRemoteCallHandlerWithResult = null;
 
         /// <summary>
         /// Construct a new RpcBuffer
@@ -646,7 +643,9 @@ namespace SharedMemory
         /// <param name="bufferCapacity">Master only: Maximum buffer capacity. Messages will be split into packets that fit this capacity (including a packet header of 64-bytes). The slave will use the same size as defined by the master</param>
         /// <param name="protocolVersion">ProtocolVersion.V1 = 64-byte header for each packet</param>
         /// <param name="bufferNodeCount">Master only: The number of nodes in the underlying circular buffers, each with a size of <paramref name="bufferCapacity"/></param>
+#pragma warning disable CS8618 // Un campo que no acepta valores NULL debe contener un valor distinto de NULL al salir del constructor. Considere la posibilidad de agregar el modificador "required" o declararlo como un valor que acepta valores NULL.
         public RpcBuffer(string name, int bufferCapacity = 50000, RpcProtocol protocolVersion = RpcProtocol.V1, int bufferNodeCount = 10)
+#pragma warning restore CS8618 // Un campo que no acepta valores NULL debe contener un valor distinto de NULL al salir del constructor. Considere la posibilidad de agregar el modificador "required" o declararlo como un valor que acepta valores NULL.
         {
             if (bufferCapacity < 256) // min 256 bytes
             {
@@ -681,7 +680,7 @@ namespace SharedMemory
             {
                 case RpcProtocol.V1:
                     this.protocolVersion = protocolVersion;
-                    protocolLength = FastStructure.SizeOf<RpcProtocolHeaderV1>();
+                    protocolLength = FastStructure<RpcProtocolHeaderV1>.Size;
                     Statistics.ProtocolOverheadPerPacket = protocolLength;
                     break;
             }
@@ -744,13 +743,66 @@ namespace SharedMemory
         /// <returns>The returned response</returns>
         /// <exception cref="ObjectDisposedException">Thrown if this object has been disposed</exception>
         /// <exception cref="InvalidOperationException">Thrown if the underlying buffers have been closed by the channel owner</exception>
-        public RpcResponse RemoteRequest(byte[] args = null, int timeoutMs = defaultTimeoutMs, CancellationToken cancellationToken = default)
+        public RpcResponse RemoteRequest(byte[]? args = null, int timeoutMs = defaultTimeoutMs, CancellationToken cancellationToken = default)
         {
             ThrowIfDisposedOrShutdown();
 
             var request = CreateMessageRequest();
             Task<RpcResponse> sendMessage = SendMessage(request, args, timeoutMs, cancellationToken);
-            return sendMessage.Result;
+            return sendMessage.GetAwaiter().GetResult();
+        }
+
+        /// <summary>
+        /// Send a remote request on the channel, blocking until a result is returned
+        /// </summary>
+        /// <param name="args">Arguments (if any) as a byte array to be sent to the remote endpoint</param>
+        /// <param name="timeoutMs">Timeout in milliseconds (defaults to 30sec)</param>
+        /// <param name="cancellationToken">A cancellation token</param>
+        /// <returns>The returned response</returns>
+        /// <exception cref="ObjectDisposedException">Thrown if this object has been disposed</exception>
+        /// <exception cref="InvalidOperationException">Thrown if the underlying buffers have been closed by the channel owner</exception>
+        public RpcResponse Send(ReadOnlyMemory<byte> bytes, int timeoutMs = defaultTimeoutMs, CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposedOrShutdown();
+
+            var request = CreateMessageRequest();
+            Task<RpcResponse> sendMessage = SendMessage(request, MemoryMarshal.TryGetArray(bytes, out var segment) ? segment.Array : null, timeoutMs, cancellationToken);
+            return sendMessage.GetAwaiter().GetResult();
+        }
+
+        /// <summary>
+        /// Send a remote request on the channel, blocking until a result is returned
+        /// </summary>
+        /// <param name="args">Arguments (if any) as a byte array to be sent to the remote endpoint</param>
+        /// <param name="timeoutMs">Timeout in milliseconds (defaults to 30sec)</param>
+        /// <param name="cancellationToken">A cancellation token</param>
+        /// <returns>The returned response</returns>
+        /// <exception cref="ObjectDisposedException">Thrown if this object has been disposed</exception>
+        /// <exception cref="InvalidOperationException">Thrown if the underlying buffers have been closed by the channel owner</exception>
+        public Task<RpcResponse> SendAsync(ReadOnlyMemory<byte> bytes, int timeoutMs = defaultTimeoutMs, CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposedOrShutdown();
+
+            var request = CreateMessageRequest();
+            return SendMessage(request, MemoryMarshal.TryGetArray(bytes, out var segment) ? segment.Array : null, timeoutMs, cancellationToken);
+        }
+
+        /// <summary>
+        /// Send a remote request on the channel, blocking until a result is returned
+        /// </summary>
+        /// <param name="args">Arguments (if any) as a byte array to be sent to the remote endpoint</param>
+        /// <param name="timeoutMs">Timeout in milliseconds (defaults to 30sec)</param>
+        /// <param name="cancellationToken">A cancellation token</param>
+        /// <returns>The returned response</returns>
+        /// <exception cref="ObjectDisposedException">Thrown if this object has been disposed</exception>
+        /// <exception cref="InvalidOperationException">Thrown if the underlying buffers have been closed by the channel owner</exception>
+        public async Task<RpcResponse> SendAsync(byte[]? args = null, int timeoutMs = defaultTimeoutMs, CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposedOrShutdown();
+
+            var request = CreateMessageRequest();
+
+            return await SendMessage(request, args, timeoutMs, cancellationToken);
         }
 
         /// <summary>
@@ -762,7 +814,7 @@ namespace SharedMemory
         /// <returns></returns>
         /// <exception cref="ObjectDisposedException">Thrown if this object has been disposed</exception>
         /// <exception cref="InvalidOperationException">Thrown if the underlying buffers have been closed by the channel owner</exception>
-        public Task<RpcResponse> RemoteRequestAsync(byte[] args = null, int timeoutMs = defaultTimeoutMs, CancellationToken cancellationToken = default)
+        public Task<RpcResponse> RemoteRequestAsync(byte[]? args = null, int timeoutMs = defaultTimeoutMs, CancellationToken cancellationToken = default)
         {
             ThrowIfDisposedOrShutdown();
 
@@ -770,7 +822,7 @@ namespace SharedMemory
             return SendMessage(request, args, timeoutMs, cancellationToken);
         }
 
-        async Task<RpcResponse> SendMessage(RpcRequest request, byte[] payload, int timeout = defaultTimeoutMs, CancellationToken cancellationToken = default)
+        async Task<RpcResponse> SendMessage(RpcRequest request, byte[]? payload, int timeout = defaultTimeoutMs, CancellationToken cancellationToken = default)
         {
             return await SendMessage(MessageType.RpcRequest, request, payload, timeout: timeout, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
@@ -787,7 +839,7 @@ namespace SharedMemory
         /// <returns></returns>
         /// <exception cref="ObjectDisposedException">Thrown if this object has been disposed</exception>
         /// <exception cref="InvalidOperationException">Thrown if the underlying buffers have been closed by the channel owner</exception>
-        protected virtual Task<RpcResponse> SendMessage(MessageType msgType, RpcRequest request, byte[] payload, ulong responseMsgId = 0, int timeout = defaultTimeoutMs, CancellationToken cancellationToken = default)
+        protected virtual Task<RpcResponse> SendMessage(MessageType msgType, RpcRequest request, byte[]? payload, ulong responseMsgId = 0, int timeout = defaultTimeoutMs, CancellationToken cancellationToken = default)
         {
             ThrowIfDisposedOrShutdown();
 
@@ -816,30 +868,23 @@ namespace SharedMemory
 
             if (success && msgType == MessageType.RpcRequest)
             {
-                if (request != null)
-                {
-                    return request.ResponseReady.Task.TimeoutOrCancel(timeout, cancellationToken);
-                }
-                else
-                {
-                    return Task.FromResult(new RpcResponse(true, null));
-                }
-
+                return request?.ResponseReady.Task.TimeoutOrCancel(timeout, cancellationToken) ?? Task.FromResult(new RpcResponse(true, null));
             }
             else
             {
-                RpcResponse rpcResponse = new RpcResponse(success, null);
+                RpcResponse rpcResponse = new(success, null);
 
                 if (request != null)
                 {
                     request.IsSuccess = success;
                     request.ResponseReady.SetResult(rpcResponse);
                 }
+
                 return Task.FromResult(rpcResponse);
             }
         }
 
-        bool WriteProtocolV1(MessageType msgType, ulong msgId, byte[] msg, ulong responseMsgId, int timeout)
+        bool WriteProtocolV1(MessageType msgType, ulong msgId, byte[]? msg, ulong responseMsgId, int timeout)
         {
             if (Disposed)
             {
@@ -858,9 +903,9 @@ namespace SharedMemory
                 int i = 0;
                 int left = msg?.Length ?? 0;
 
-                byte[] pMsg = null;
-
-                ushort totalPackets = ((msg?.Length ?? 0) == 0) ? (ushort)1 : Convert.ToUInt16(Math.Ceiling((double)msg.Length / (double)msgBufferLength));
+                byte[] pMsg;
+                int iLen = msg?.Length ?? 0;
+                ushort totalPackets = (iLen == 0) ? (ushort)1 : Convert.ToUInt16(Math.Ceiling((double)iLen / (double)msgBufferLength));
                 ushort currentPacket = 1;
 
                 while (true)
@@ -882,13 +927,14 @@ namespace SharedMemory
                         PayloadSize = msg?.Length ?? 0,
                         ResponseId = responseMsgId
                     };
-                    FastStructure.CopyTo(ref header, pMsg, 0);
+
+                    header.ToBytes().CopyTo(pMsg);
 
                     if (left > msgBufferLength)
                     {
                         // Writing payload
                         if (msg != null && msg.Length > 0)
-                            Buffer.BlockCopy(msg, i, pMsg, protocolLength, msgBufferLength);
+                            msg.AsSpan(i, msgBufferLength).CopyTo(pMsg.AsSpan(protocolLength, msgBufferLength));
 
                         left -= msgBufferLength;
                         i += msgBufferLength;
@@ -898,7 +944,7 @@ namespace SharedMemory
                         // Writing last packet of payload
                         if (msg != null && msg.Length > 0)
                         {
-                            Buffer.BlockCopy(msg, i, pMsg, protocolLength, left);
+                            msg.AsSpan(i, left).CopyTo(pMsg.AsSpan(protocolLength, left));
                         }
 
                         left = 0;
@@ -907,7 +953,7 @@ namespace SharedMemory
                     Statistics.StartWaitWrite();
                     var bytes = WriteBuffer.Write((ptr) =>
                     {
-                        FastStructure.WriteBytes(ptr, pMsg, 0, pMsg.Length);
+                        ptr.WriteBytes(pMsg, 0, pMsg.Length);
                         return pMsg.Length;
                     }, 1000);
 
@@ -925,7 +971,7 @@ namespace SharedMemory
         }
 
         private bool m_ReadThreadIsReading = false;
-        private object m_ReadThreadIsReadingLock = new object();
+        private readonly object m_ReadThreadIsReadingLock = new();
 
         void ReadThreadV1()
         {
@@ -959,26 +1005,28 @@ namespace SharedMemory
                         l_TempReadBuffer.Read((ptr) =>
                         {
                             int readLength = 0;
-                            var header = FastStructure<RpcProtocolHeaderV1>.PtrToStructure(ptr);
+                            var header = RpcProtocolHeaderV1.FromPointer(ptr);
                             ptr = ptr + protocolLength;
                             readLength += protocolLength;
 
-                            RpcRequest request = null;
-                            if (header.MsgType == MessageType.RpcResponse || header.MsgType == MessageType.ErrorInRpc)
+                            RpcRequest request;
+                            switch (header.MsgType)
                             {
-                                if (!Requests.TryGetValue(header.ResponseId, out request))
-                                {
-                                    // The response received does not have a  matching message that was sent
-                                    Statistics.DiscardResponse(header.ResponseId);
-                                    return protocolLength;
-                                }
-                            }
-                            else
-                            {
-                                request = IncomingRequests.GetOrAdd(header.MsgId, new RpcRequest
-                                {
-                                    MsgId = header.MsgId
-                                });
+                                case MessageType.RpcResponse:
+                                case MessageType.ErrorInRpc:
+                                    if (!Requests.TryGetValue(header.ResponseId, out request))
+                                    {
+                                        // The response received does not have a  matching message that was sent
+                                        Statistics.DiscardResponse(header.ResponseId);
+                                        return protocolLength;
+                                    }
+                                    break;
+                                default:
+                                    request = IncomingRequests.GetOrAdd(header.MsgId, new RpcRequest
+                                    {
+                                        MsgId = header.MsgId
+                                    });
+                                    break;
                             }
 
                             int packetSize = header.PayloadSize < msgBufferLength ? header.PayloadSize :
@@ -986,61 +1034,54 @@ namespace SharedMemory
 
                             if (header.PayloadSize > 0)
                             {
-                                if (request.Data == null)
-                                {
-                                    request.Data = new byte[header.PayloadSize];
-                                }
+                                request.Data ??= new byte[header.PayloadSize];
 
                                 int index = msgBufferLength * (header.CurrentPacket - 1);
-                                FastStructure.ReadBytes(request.Data, ptr, index, packetSize);
+                                request.Data.ReadBytes(ptr, index, packetSize);
                                 readLength += packetSize;
                             }
 
                             if (header.CurrentPacket == header.TotalPackets)
                             {
-                                if (header.MsgType == MessageType.RpcResponse || header.MsgType == MessageType.ErrorInRpc)
+                                switch (header.MsgType)
                                 {
-                                    Requests.TryRemove(request.MsgId, out RpcRequest removed);
-                                }
-                                else
-                                {
-                                    IncomingRequests.TryRemove(request.MsgId, out RpcRequest removed);
+                                    case MessageType.RpcResponse:
+                                    case MessageType.ErrorInRpc:
+                                        Requests.TryRemove(request.MsgId, out RpcRequest removed);
+                                        break;
+
+                                    default:
+                                        IncomingRequests.TryRemove(request.MsgId, out removed);
+                                        break;
                                 }
 
                                 // Full message is ready
 
                                 Statistics.MessageReceived(header.MsgType, request.Data?.Length ?? 0);
 
-                                if (header.MsgType == MessageType.RpcResponse)
+                                switch (header.MsgType)
                                 {
-                                    request.IsSuccess = true;
-                                    request.ResponseReady.SetResult(new RpcResponse(request.IsSuccess, request.Data));
-                                }
-                                else if (header.MsgType == MessageType.ErrorInRpc)
-                                {
-                                    request.IsSuccess = false;
-                                    request.ResponseReady.SetResult(new RpcResponse(request.IsSuccess, request.Data));
-                                }
-                                else if (header.MsgType == MessageType.RpcRequest)
-                                {
-                                    // For Handling Request we create an new Task because this can take sometime
-                                    Task.Run(async () =>
-                                    {
-                                        try
+                                    case MessageType.RpcResponse:
+                                        request.IsSuccess = true;
+                                        request.ResponseReady.SetResult(new RpcResponse(request.IsSuccess, request.Data));
+                                        break;
+                                    case MessageType.ErrorInRpc:
+                                        request.IsSuccess = false;
+                                        request.ResponseReady.SetResult(new RpcResponse(request.IsSuccess, request.Data));
+                                        break;
+                                    case MessageType.RpcRequest:
+                                        _ = Task.Run(async () =>
                                         {
-                                            await ProcessCallHandler(request).ConfigureAwait(false);
-                                        }
-                                        catch(Exception ex)
-                                        {
-                                            // Ignore Object Disposed and Invalid Operation Exceptions
-                                            // because the other side of the rpc buffers may 
-                                            // not know if this Buffer is shutting down or disposed
-                                            if (!(ex is ObjectDisposedException || ex is InvalidOperationException))
+                                            try
+                                            {
+                                                await ProcessCallHandler(request).ConfigureAwait(false);
+                                            }
+                                            catch (Exception _) when (_ is ObjectDisposedException or InvalidOperationException)
                                             {
                                                 throw;
                                             }
-                                        }
-                                    });
+                                        });
+                                        break;
                                 }
                             }
 
@@ -1081,12 +1122,10 @@ namespace SharedMemory
 
             try
             {
-
                 if (RemoteCallHandler != null)
                 {
                     RemoteCallHandler(request.MsgId, request.Data);
-                    await SendMessage(MessageType.RpcResponse, CreateMessageRequest(), null, request.MsgId, cancellationToken: cancellationToken)
-                        .ConfigureAwait(false);
+                    await SendMessage(MessageType.RpcResponse, CreateMessageRequest(), null, request.MsgId, cancellationToken: cancellationToken);
                 }
                 else if (AsyncRemoteCallHandler != null)
                 {
@@ -1169,7 +1208,7 @@ namespace SharedMemory
 
             if (disposeManagedResources)
             {
-                DisposeManagedResources();   
+                DisposeManagedResources();
             }
         }
 
@@ -1207,7 +1246,7 @@ namespace SharedMemory
             // Mark as Disposed first otherwise ReadThread has NullPointerException because
             // ReadBuffer is already null but Disposed is false
             long l_OldValue = Interlocked.CompareExchange(ref _disposed, 1, 0);
-            
+
             // Make sure that only one Thread is processing the dispose
             if (l_OldValue != 0)
                 return;

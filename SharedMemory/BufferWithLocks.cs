@@ -164,7 +164,7 @@ namespace SharedMemory
         protected override void Write<T>(ref T data, long bufferPosition = 0)
         {
             WriteWait();
-            base.Write<T>(ref data, bufferPosition);
+            base.Write(ref data, bufferPosition);
         }
 
         /// <summary>
@@ -224,7 +224,7 @@ namespace SharedMemory
         protected override void Read<T>(out T data, long bufferPosition = 0)
         {
             ReadWait();
-            base.Read<T>(out data, bufferPosition);
+            base.Read(out data, bufferPosition);
         }
 
         /// <summary>
@@ -233,10 +233,11 @@ namespace SharedMemory
         /// <typeparam name="T">A structure type</typeparam>
         /// <param name="buffer">Array that will contain the values read from the buffer. The length of this array controls the number of elements to read.</param>
         /// <param name="bufferPosition">The offset within the buffer region of the shared memory to read from.</param>
-        protected override void Read<T>(T[] buffer, long bufferPosition = 0)
+        protected void Read<T>(T[] buffer, long bufferPosition = 0)
+            where T : struct
         {
             ReadWait();
-            base.Read<T>(buffer, bufferPosition);
+            base.Read(buffer.AsSpan(), bufferPosition);
         }
 
         /// <summary>

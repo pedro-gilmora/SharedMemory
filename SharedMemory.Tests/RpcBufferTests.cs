@@ -29,8 +29,9 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using SharedMemory;
 using System.Diagnostics;
+using System.IO;
 
-namespace SharedMemoryTests
+namespace SharedMemory.Tests
 {
     [TestClass]
     public class RpcBufferTests
@@ -67,7 +68,7 @@ namespace SharedMemoryTests
         public void Constructor_BufferCapacityOutOfRange()
         {
             Assert.ThrowsException<ArgumentOutOfRangeException>(() => new RpcBuffer(ipcName, 255));
-            Assert.ThrowsException<ArgumentOutOfRangeException>(() => new RpcBuffer(ipcName, 1024*1024 + 1));
+            Assert.ThrowsException<ArgumentOutOfRangeException>(() => new RpcBuffer(ipcName, 1024 * 1024 + 1));
         }
 
         [TestMethod]
@@ -82,7 +83,7 @@ namespace SharedMemoryTests
                 return BitConverter.GetBytes((payload[0] + payload[1]));
             });
 
-            var result = ipcMaster.RemoteRequest(new byte[] { 123, 10 });
+            var result = ipcMaster.RemoteRequest([123, 10]);
 
             Assert.IsTrue(result.Success);
             Assert.AreEqual(123 + 10, BitConverter.ToInt32(result.Data, 0));
@@ -100,20 +101,18 @@ namespace SharedMemoryTests
                 return BitConverter.GetBytes((payload[0] + payload[1]));
             });
 
-            using (var cts = new CancellationTokenSource())
-            {
-                var remoteRequestTask = ipcMaster.RemoteRequestAsync(new byte[] { 123, 10 }, cancellationToken: cts.Token);
-                cts.Cancel();
+            using var cts = new CancellationTokenSource();
+            var remoteRequestTask = ipcMaster.RemoteRequestAsync([123, 10], cancellationToken: cts.Token);
+            cts.Cancel();
 
-                if (await Task.WhenAny(remoteRequestTask, Task.Delay(TimeSpan.FromMilliseconds(50))) == remoteRequestTask)
-                {
-                    var result = await remoteRequestTask;
-                    Assert.IsFalse(result.Success);
-                }
-                else
-                {
-                    Assert.Fail("cancellation seems not to have worked");
-                }
+            if (await Task.WhenAny(remoteRequestTask, Task.Delay(TimeSpan.FromMilliseconds(50))) == remoteRequestTask)
+            {
+                var result = await remoteRequestTask;
+                Assert.IsFalse(result.Success);
+            }
+            else
+            {
+                Assert.Fail("cancellation seems not to have worked");
             }
         }
 
@@ -129,14 +128,12 @@ namespace SharedMemoryTests
                 return BitConverter.GetBytes((payload[0] + payload[1]));
             });
 
-            using (var cts = new CancellationTokenSource())
-            {
-                var remoteRequestTask = ipcMaster.RemoteRequestAsync(new byte[] { 123, 10 }, cancellationToken: cts.Token);
-                slaveBlockingTcs.SetResult(false);
+            using var cts = new CancellationTokenSource();
+            var remoteRequestTask = ipcMaster.RemoteRequestAsync([123, 10], cancellationToken: cts.Token);
+            slaveBlockingTcs.SetResult(false);
 
-                var result = await remoteRequestTask;
-                Assert.IsTrue(result.Success);
-            }
+            var result = await remoteRequestTask;
+            Assert.IsTrue(result.Success);
         }
 
         [TestMethod]
@@ -151,20 +148,18 @@ namespace SharedMemoryTests
                 return BitConverter.GetBytes((payload[0] + payload[1]));
             });
 
-            using (var cts = new CancellationTokenSource())
-            {
-                var remoteRequestTask = Task.Run(() => ipcMaster.RemoteRequest(new byte[] { 123, 10 }, cancellationToken: cts.Token));
-                cts.Cancel();
+            using var cts = new CancellationTokenSource();
+            var remoteRequestTask = Task.Run(() => ipcMaster.RemoteRequest([123, 10], cancellationToken: cts.Token));
+            cts.Cancel();
 
-                if (await Task.WhenAny(remoteRequestTask, Task.Delay(TimeSpan.FromMilliseconds(50))) == remoteRequestTask)
-                {
-                    var result = await remoteRequestTask;
-                    Assert.IsFalse(result.Success);
-                }
-                else
-                {
-                    Assert.Fail("cancellation seems not to have worked");
-                }
+            if (await Task.WhenAny(remoteRequestTask, Task.Delay(TimeSpan.FromMilliseconds(50))) == remoteRequestTask)
+            {
+                var result = await remoteRequestTask;
+                Assert.IsFalse(result.Success);
+            }
+            else
+            {
+                Assert.Fail("cancellation seems not to have worked");
             }
         }
 
@@ -180,14 +175,12 @@ namespace SharedMemoryTests
                 return BitConverter.GetBytes((payload[0] + payload[1]));
             });
 
-            using (var cts = new CancellationTokenSource())
-            {
-                var remoteRequestTask = Task.Run(() => ipcMaster.RemoteRequest(new byte[] { 123, 10 }, cancellationToken: cts.Token));
-                slaveBlockingTcs.SetResult(false);
+            using var cts = new CancellationTokenSource();
+            var remoteRequestTask = Task.Run(() => ipcMaster.RemoteRequest([123, 10], cancellationToken: cts.Token));
+            slaveBlockingTcs.SetResult(false);
 
-                var result = await remoteRequestTask;
-                Assert.IsTrue(result.Success);
-            }
+            var result = await remoteRequestTask;
+            Assert.IsTrue(result.Success);
         }
 
         [TestMethod]
@@ -202,7 +195,7 @@ namespace SharedMemoryTests
                 return BitConverter.GetBytes((payload[0] + payload[1]));
             });
 
-            var result = ipcMaster.RemoteRequest(new byte[] { 123, 10 });
+            var result = ipcMaster.RemoteRequest([123, 10]);
 
             Assert.IsTrue(result.Success);
             Assert.AreEqual((ulong)1, ipcMaster.Statistics.RequestsSent);
@@ -229,7 +222,7 @@ namespace SharedMemoryTests
                 throw new Exception("test exception");
             });
 
-            var result = ipcMaster.RemoteRequest(null);
+            var result = ipcMaster.RemoteRequest((byte[])null);
 
             Assert.IsFalse(result.Success);
         }
@@ -240,15 +233,15 @@ namespace SharedMemoryTests
             ipcMaster = new RpcBuffer(ipcName, async (msgId, payload) =>
             {
                 // Ask slave to multiply the two bytes
-                return (await ipcMaster.RemoteRequestAsync(new byte[] { 3, 3 }).ConfigureAwait(false)).Data;
+                return (await ipcMaster.RemoteRequestAsync([3, 3]).ConfigureAwait(false)).Data;
             });
             ipcSlave = new RpcBuffer(ipcName, (msgId, payload) =>
             {
-                return new byte[] { (byte)(payload[0] * payload[1]) };
+                return [(byte)(payload[0] * payload[1])];
             });
 
             // Send request to master from slave
-            var result = ipcSlave.RemoteRequest(null);
+            var result = ipcSlave.RemoteRequest((byte[])null);
             Assert.IsTrue(result.Success);
             Assert.AreEqual((3 * 3), result.Data[0]);
         }
@@ -263,10 +256,10 @@ namespace SharedMemoryTests
             ipcSlave = new RpcBuffer(ipcName, (msgId, payload) =>
             {
                 Task.Delay(1000).Wait();
-                return new byte[] { (byte)(payload[0] * payload[1]) };
+                return [(byte)(payload[0] * payload[1])];
             });
 
-            var result = ipcMaster.RemoteRequest(new byte[] { 3, 3 }, 100);
+            var result = ipcMaster.RemoteRequest([3, 3], 100);
             Assert.IsFalse(result.Success);
 
         }
@@ -280,10 +273,10 @@ namespace SharedMemoryTests
             ipcSlave = new RpcBuffer(ipcName, (msgId, payload) =>
             {
                 Task.Delay(1000).Wait();
-                return new byte[] { (byte)(payload[0] * payload[1]) };
+                return [(byte)(payload[0] * payload[1])];
             });
 
-            var result = ipcMaster.RemoteRequest(new byte[] { 3, 3 }, 0);
+            var result = ipcMaster.RemoteRequest([3, 3], 0);
             Assert.IsFalse(result.Success);
 
         }
@@ -297,7 +290,7 @@ namespace SharedMemoryTests
             }, bufferCapacity: 256);
             ipcSlave = new RpcBuffer(ipcName, (msgId, payload) =>
             {
-                return new byte[] { (byte)(payload[0] * payload[1]) };
+                return [(byte)(payload[0] * payload[1])];
             });
 
             Stopwatch watch = Stopwatch.StartNew();
@@ -305,7 +298,7 @@ namespace SharedMemoryTests
             // Send request to slave from master
             for (var i = 0; i < 5000; i++)
             {
-                var result = ipcMaster.RemoteRequest(new byte[] { 3, 3 }, 100);
+                var result = ipcMaster.RemoteRequest([3, 3], 100);
                 Assert.IsTrue(result.Success);
                 Assert.AreEqual((3 * 3), result.Data[0]);
             }
@@ -313,25 +306,25 @@ namespace SharedMemoryTests
 
             Assert.IsTrue(watch.ElapsedMilliseconds < 1000);
         }
-        
+
         [TestMethod]
         public void RPC_LoadTest_5k_Small_Multi_Thread()
         {
             // Warmup the Theadpool
             ThreadPool.SetMinThreads(15, 10);
-            
+
             ipcMaster = new RpcBuffer(ipcName, async (msgId, payload) =>
             {
             }, bufferCapacity: 256);
             ipcSlave = new RpcBuffer(ipcName, (msgId, payload) =>
             {
-                return new byte[] { (byte)(payload[0] * payload[1]) };
+                return [(byte)(payload[0] * payload[1])];
             });
 
             Stopwatch watch = Stopwatch.StartNew();
 
-            List<Task> tasks = new List<Task>();
-            
+            List<Task> tasks = [];
+
             for (int i = 0; i < 10; i++)
             {
                 tasks.Add(Task.Run(() =>
@@ -339,15 +332,15 @@ namespace SharedMemoryTests
                     // Send request to slave from master
                     for (var j = 0; j < 5000; j++)
                     {
-                        var result = ipcMaster.RemoteRequest(new byte[] { 3, 3 });
+                        var result = ipcMaster.RemoteRequest([3, 3]);
                         Assert.IsTrue(result.Success);
                         Assert.AreEqual((3 * 3), result.Data[0]);
-                    }       
+                    }
                 }));
-                
+
             }
 
-            Task.WaitAll(tasks.ToArray());
+            Task.WaitAll([.. tasks]);
             watch.Stop();
 
             Assert.IsTrue(watch.ElapsedMilliseconds < 1000);
@@ -361,7 +354,7 @@ namespace SharedMemoryTests
             }, bufferCapacity: 1025 * 512);
             ipcSlave = new RpcBuffer(ipcName, (msgId, payload) =>
             {
-                return new byte[] { (byte)(payload[0] * payload[1]) };
+                return [(byte)(payload[0] * payload[1])];
             });
 
             var buf = new byte[1025 * 512];
@@ -388,11 +381,11 @@ namespace SharedMemoryTests
             ipcMaster = new RpcBuffer(ipcName, async (msgId, payload) =>
             {
                 // Ask slave to multiply the two bytes
-                return (await ipcMaster.RemoteRequestAsync(new byte[] { 3, 3 }).ConfigureAwait(false)).Data;
+                return (await ipcMaster.RemoteRequestAsync([3, 3]).ConfigureAwait(false)).Data;
             });
             ipcSlave = new RpcBuffer(ipcName, (msgId, payload) =>
             {
-                return new byte[] { (byte)(payload[0] * payload[1]) };
+                return [(byte)(payload[0] * payload[1])];
             });
 
             Stopwatch watch = Stopwatch.StartNew();
@@ -400,7 +393,7 @@ namespace SharedMemoryTests
             // Send request to master from slave
             for (var i = 0; i < 10; i++)
             {
-                var result = ipcSlave.RemoteRequest(null, 30000);
+                var result = ipcSlave.RemoteRequest((byte[])null, 30000);
                 Assert.IsTrue(result.Success);
                 Assert.AreEqual((3 * 3), result.Data[0]);
             }
@@ -419,7 +412,7 @@ namespace SharedMemoryTests
 
             ipcSlave = new RpcBuffer(ipcName);
 
-            ipcSlave.RemoteRequest(null);
+            ipcSlave.RemoteRequest((byte[])null);
 
             ipcMaster.Dispose();
             while (!ipcMaster.DisposeFinished)
@@ -427,9 +420,47 @@ namespace SharedMemoryTests
                 Task.Delay(125).Wait();
             }
 
-            Assert.ThrowsException<InvalidOperationException>(() => ipcSlave.RemoteRequest(null));
+            Assert.ThrowsException<InvalidOperationException>(() => ipcSlave.RemoteRequest((byte[])null));
         }
-        
+
+        [TestMethod]
+        public void RPC_BufferWriter()
+        {
+            ipcMaster = new RpcBuffer(ipcName, bufferCapacity: 256);
+
+            ipcSlave = new RpcBuffer(ipcName, (msgId, payload) => payload);
+            
+            var writer = new BufferBuilder();
+            const int count = 20;
+            Person[] people = new Person[count];
+            
+            writer.Write(count);
+            
+            for (int i = 0; i < 20; i++)
+            {
+                Person p = people[i] = new(i + 1, i % 3 == 0 ? null : $"Person {i + 1}");
+                writer.Write(p.Id);
+                writer.TryWrite(p.Name);
+            }
+
+            if(ipcMaster.Send(writer.WrittenMemory) is { Success: true, Data:{ Length:>0} data })
+            {
+                BufferReader reader = new(data);
+
+                var requestCount = reader.ReadInt32();
+                
+                Assert.AreEqual(count, requestCount);
+                
+                for (int i = 0; i < 20; i++)
+                {
+                    Person p = new(reader.ReadInt32(), reader.TryReadString());
+                    Assert.AreEqual(p, people[i]);
+                }
+            }
+        }
+
+        record Person(int Id, string Name);
+
         [TestMethod]
         public void RPC_Dispose()
         {
@@ -445,13 +476,13 @@ namespace SharedMemoryTests
                 ipcSlave = new RpcBuffer(ipcName, (msgId, payload) =>
                 {
                     ipcSlave.Dispose();
-                    return new byte[] { (byte)(payload[0] * payload[1]) };
-                    
+                    return [(byte)(payload[0] * payload[1])];
+
                 });
 
                 Stopwatch watch = Stopwatch.StartNew();
 
-                ipcMaster.RemoteRequestAsync(new byte[] { 3, 3 });
+                ipcMaster.RemoteRequestAsync([3, 3]);
                 Task.Delay(125).Wait();
                 ipcSlave.Dispose();
                 watch.Stop();
@@ -462,15 +493,7 @@ namespace SharedMemoryTests
                 {
                     Task.Delay(125).Wait();
                 }
-
-                
             }
-
-
-            
-
-         
         }
-        
     }
 }

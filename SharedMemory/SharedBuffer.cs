@@ -26,8 +26,10 @@
 
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.IO.MemoryMappedFiles;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Permissions;
 using System.Text;
@@ -153,6 +155,7 @@ namespace SharedMemory
         /// <para>The shared memory layout on 32-bit and 64-bit is:<br />
         /// <code>
         /// |       Header       |    Buffer    |<br />
+        /// |--------------------|--------------|<br />
         /// |      16-bytes      |  bufferSize  |
         /// </code>
         /// </para>
@@ -160,7 +163,7 @@ namespace SharedMemory
         protected SharedBuffer(string name, long bufferSize, bool ownsSharedMemory)
         {
             #region Argument validation
-            if (name == String.Empty || name == null)
+            if (name == string.Empty || name == null)
                 throw new ArgumentException("Cannot be String.Empty or null", "name");
             if (ownsSharedMemory && bufferSize <= 0)
                 throw new ArgumentOutOfRangeException("bufferSize", bufferSize, "Buffer size must be larger than zero when creating a new shared memory buffer.");
@@ -286,10 +289,13 @@ namespace SharedMemory
             if (!IsOwnerOfSharedMemory)
                 return;
 
-            SharedHeader header = new SharedHeader();
-            header.SharedMemorySize = SharedMemorySize;
-            header.Shutdown = 0;
-            View.Write<SharedHeader>(HeaderOffset, ref header);
+            SharedHeader header = new()
+            {
+                SharedMemorySize = SharedMemorySize,
+                Shutdown = 0
+            };
+
+            View.Write(HeaderOffset, ref header);
         }
 
         /// <summary>
@@ -347,7 +353,7 @@ namespace SharedMemory
         protected virtual void Write<T>(ref T source, long bufferPosition = 0)
             where T : struct
         {
-            View.Write<T>(BufferOffset + bufferPosition, ref source);
+            View.Write(BufferOffset + bufferPosition, ref source);
         }
 
         /// <summary>
@@ -359,7 +365,7 @@ namespace SharedMemory
         protected virtual void Write<T>(T[] source, long bufferPosition = 0)
             where T : struct
         {
-            Write<T>(source, 0, bufferPosition);
+            Write(source, 0, bufferPosition);
         }
 
         /// <summary>
@@ -372,7 +378,7 @@ namespace SharedMemory
         protected virtual void Write<T>(T[] source, int index, long bufferPosition = 0)
             where T : struct
         {
-            FastStructure.WriteArray<T>((IntPtr)(BufferStartPtr + bufferPosition), source, index, source.Length - index);
+            source.WriteArray((IntPtr)(BufferStartPtr + bufferPosition), index, source.Length - index);
         }
 
         /// <summary>
@@ -386,7 +392,7 @@ namespace SharedMemory
         protected virtual void WriteArray<T>(T[] source, int index, int count, long bufferPosition = 0)
             where T : struct
         {
-            FastStructure.WriteArray<T>((IntPtr)(BufferStartPtr + bufferPosition), source, index, count);
+            source.WriteArray((IntPtr)(BufferStartPtr + bufferPosition), index, count);
         }
 
         /// <summary>
@@ -397,11 +403,14 @@ namespace SharedMemory
         /// <param name="bufferPosition">The offset within the buffer region of the shared memory to write to.</param>
         protected virtual void Write(IntPtr source, int length, long bufferPosition = 0)
         {
-#if NETCORE
-            Buffer.MemoryCopy((void*)source, BufferStartPtr + bufferPosition, BufferSize - bufferPosition, length);
-#else
-            UnsafeNativeMethods.CopyMemory(new IntPtr(BufferStartPtr + bufferPosition), source, (uint)length);
-#endif
+            if (length < 0)
+                throw new ArgumentOutOfRangeException(nameof(length));
+            if (bufferPosition < 0)
+                throw new ArgumentOutOfRangeException(nameof(bufferPosition));
+            if (BufferSize - bufferPosition < length)
+                throw new ArgumentException("Invalid offset into pointer specified by bufferPosition and length");
+
+            new ReadOnlySpan<byte>((byte*)source, length).CopyTo(new Span<byte>(BufferStartPtr + bufferPosition, length));
         }
 
         /// <summary>
@@ -427,7 +436,7 @@ namespace SharedMemory
         protected virtual void Read<T>(out T data, long bufferPosition = 0)
             where T : struct
         {
-            View.Read<T>(BufferOffset + bufferPosition, out data);
+            View.Read(BufferOffset + bufferPosition, out data);
         }
 
         /// <summary>
@@ -436,10 +445,10 @@ namespace SharedMemory
         /// <typeparam name="T">A structure type</typeparam>
         /// <param name="destination">Array that will contain the values read from the buffer. The length of this array controls the number of elements to read.</param>
         /// <param name="bufferPosition">The offset within the buffer region of the shared memory to read from.</param>
-        protected virtual void Read<T>(T[] destination, long bufferPosition = 0)
+        protected virtual void Read<T>(Span<T> destination, long bufferPosition = 0)
             where T : struct
         {
-            FastStructure.ReadArray<T>(destination, (IntPtr)(BufferStartPtr + bufferPosition), 0, destination.Length);
+            destination.ReadArray((IntPtr)(BufferStartPtr + bufferPosition), 0, destination.Length);
         }
 
         /// <summary>
@@ -453,7 +462,7 @@ namespace SharedMemory
         protected virtual void ReadArray<T>(T[] destination, int index, int count, long bufferPosition)
             where T : struct
         {
-            FastStructure.ReadArray<T>(destination, (IntPtr)(BufferStartPtr + bufferPosition), index, count);
+            destination.ReadArray((IntPtr)(BufferStartPtr + bufferPosition), index, count);
         }
 
         /// <summary>
@@ -464,11 +473,14 @@ namespace SharedMemory
         /// <param name="bufferPosition">The offset within the buffer region of the shared memory to read from.</param>
         protected virtual void Read(IntPtr destination, int length, long bufferPosition = 0)
         {
-#if NETCORE
-            Buffer.MemoryCopy(BufferStartPtr + bufferPosition, (void*)destination, length, length);
-#else
-            UnsafeNativeMethods.CopyMemory(destination, new IntPtr(BufferStartPtr + bufferPosition), (uint)length);
-#endif
+            if (length < 0)
+                throw new ArgumentOutOfRangeException(nameof(length));
+            if (bufferPosition < 0)
+                throw new ArgumentOutOfRangeException(nameof(bufferPosition));
+            if (BufferSize - bufferPosition < length)
+                throw new ArgumentException("Invalid offset into pointer specified by bufferPosition and length");
+
+            new ReadOnlySpan<byte>(BufferStartPtr + bufferPosition, length).CopyTo(new Span<byte>((void*)destination, length));
         }
 
         /// <summary>
