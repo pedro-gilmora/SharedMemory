@@ -25,12 +25,8 @@
 //   http://www.codeproject.com/Articles/14740/Fast-IPC-Communication-Using-Shared-Memory-and-Int
 
 using System;
-using System.Collections.Generic;
 using System.IO.MemoryMappedFiles;
-using System.Linq;
 using System.Runtime.InteropServices;
-using System.Security.Permissions;
-using System.Text;
 using System.Threading;
 
 namespace SharedMemory
@@ -41,6 +37,9 @@ namespace SharedMemory
 #if NETFULL
     [PermissionSet(SecurityAction.LinkDemand)]
     [PermissionSet(SecurityAction.InheritanceDemand)]
+#endif
+#if !NETSTANDARD
+        [System.Runtime.Versioning.SupportedOSPlatform("windows")]
 #endif
     public unsafe class CircularBuffer : SharedBuffer
     {
@@ -84,7 +83,7 @@ namespace SharedMemory
         {
             get
             {
-                return NodeHeaderOffset + Marshal.SizeOf(typeof(NodeHeader));
+                return NodeHeaderOffset + Marshal.SizeOf<NodeHeader>();
             }
         }
 
@@ -95,7 +94,7 @@ namespace SharedMemory
         {
             get
             {
-                return NodeOffset + (Marshal.SizeOf(typeof(Node)) * NodeCount);
+                return NodeOffset + (Marshal.SizeOf<Node>() * NodeCount);
             }
         }
 
@@ -241,8 +240,10 @@ namespace SharedMemory
             Open();
         }
 
+#pragma warning disable CS8618 // Un campo que no acepta valores NULL debe contener un valor distinto de NULL al salir del constructor. Considere la posibilidad de agregar el modificador "required" o declararlo como un valor que acepta valores NULL.
         private CircularBuffer(string name, int nodeCount, int nodeBufferSize, bool ownsSharedMemory)
-            : base(name, Marshal.SizeOf(typeof(NodeHeader)) + (Marshal.SizeOf(typeof(Node)) * nodeCount) + (nodeCount * (long)nodeBufferSize), ownsSharedMemory)
+#pragma warning restore CS8618 // Un campo que no acepta valores NULL debe contener un valor distinto de NULL al salir del constructor. Considere la posibilidad de agregar el modificador "required" o declararlo como un valor que acepta valores NULL.
+            : base(name, Marshal.SizeOf<NodeHeader>() + (Marshal.SizeOf<Node>() * nodeCount) + (nodeCount * (long)nodeBufferSize), ownsSharedMemory)
         {
             #region Argument validation
             if (ownsSharedMemory && nodeCount < 2)
@@ -357,9 +358,9 @@ namespace SharedMemory
             if (DataExists != null)
             {
                 (DataExists as IDisposable).Dispose();
-                DataExists = null;
+                DataExists = null!;
                 (NodeAvailable as IDisposable).Dispose();
-                NodeAvailable = null;
+                NodeAvailable = null!;
             }
 
             _nodeHeader = null;
@@ -500,7 +501,7 @@ namespace SharedMemory
         public virtual int Write<T>(ref T source, int timeout = 1000)
             where T : struct
         {
-            int structSize = Marshal.SizeOf(typeof(T));
+            int structSize = Marshal.SizeOf<T>();
             if (structSize > NodeBufferSize)
                 throw new ArgumentOutOfRangeException("T", "The size of structure " + typeof(T).Name + " is larger than NodeBufferSize");
 
@@ -581,7 +582,7 @@ namespace SharedMemory
         /// </summary>
         public NodeHeader ReadNodeHeader()
         {
-            return (NodeHeader)Marshal.PtrToStructure(new IntPtr(_nodeHeader), typeof(NodeHeader));
+            return Marshal.PtrToStructure<NodeHeader>(new IntPtr(_nodeHeader));
         }
 
         /// <summary>
@@ -713,7 +714,7 @@ namespace SharedMemory
         public virtual int Read<T>(out T destination, int timeout = 1000)
             where T: struct
         {
-            int structSize = Marshal.SizeOf(typeof(T));
+            int structSize = Marshal.SizeOf<T>();
             if (structSize > NodeBufferSize)
                 throw new ArgumentOutOfRangeException("T", "The size of structure " + typeof(T).Name + " is larger than NodeBufferSize");
 

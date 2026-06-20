@@ -1,9 +1,6 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Drawing;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace SharedMemory
 {
@@ -48,7 +45,14 @@ namespace SharedMemory
             public byte[] ToBytes()
             {
                 byte[] result = new byte[FastStructure<T>.Size];
-                MemoryMarshal.Write(new Span<byte>(result), ref item);
+                MemoryMarshal.Write(new Span<byte>(result),
+#if NETSTANDARD
+                    ref 
+#else
+                    in
+#endif
+                    item);
+
                 return result;
             }
 
@@ -90,8 +94,6 @@ namespace SharedMemory
 
         public static unsafe void WriteBytes(this IntPtr destination, Span<byte> buffer, int index, int count)
         {
-            if (buffer == null)
-                throw new ArgumentNullException(nameof(buffer));
             if (count < 0)
                 throw new ArgumentOutOfRangeException(nameof(count));
             if (index < 0)

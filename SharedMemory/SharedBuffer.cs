@@ -25,14 +25,9 @@
 //   http://www.codeproject.com/Articles/14740/Fast-IPC-Communication-Using-Shared-Memory-and-Int
 
 using System;
-using System.Collections.Generic;
-using System.Drawing;
 using System.IO.MemoryMappedFiles;
-using System.Linq;
-using System.Reflection;
 using System.Runtime.InteropServices;
-using System.Security.Permissions;
-using System.Text;
+using System.Runtime.Versioning;
 using System.Threading;
 
 namespace SharedMemory
@@ -66,7 +61,7 @@ namespace SharedMemory
         {
             get
             {
-                return HeaderOffset + Marshal.SizeOf(typeof(SharedHeader)) + BufferSize;
+                return HeaderOffset + Marshal.SizeOf<SharedHeader>() + BufferSize;
             }
         }
 
@@ -111,7 +106,7 @@ namespace SharedMemory
         {
             get
             {
-                return HeaderOffset + Marshal.SizeOf(typeof(SharedHeader));
+                return HeaderOffset + Marshal.SizeOf<SharedHeader>();
             }
         }
 
@@ -160,7 +155,9 @@ namespace SharedMemory
         /// </code>
         /// </para>
         /// </remarks>
+#pragma warning disable CS8618 // Un campo que no acepta valores NULL debe contener un valor distinto de NULL al salir del constructor. Considere la posibilidad de agregar el modificador "required" o declararlo como un valor que acepta valores NULL.
         protected SharedBuffer(string name, long bufferSize, bool ownsSharedMemory)
+#pragma warning restore CS8618 // Un campo que no acepta valores NULL debe contener un valor distinto de NULL al salir del constructor. Considere la posibilidad de agregar el modificador "required" o declararlo como un valor que acepta valores NULL.
         {
             #region Argument validation
             if (name == string.Empty || name == null)
@@ -203,6 +200,9 @@ namespace SharedMemory
         /// <exception cref="System.IO.FileNotFoundException">If trying to open a new shared memory buffer that does not exist as a consumer of existing buffer.</exception>
         /// <exception cref="System.ArgumentOutOfRangeException">If trying to create a new shared memory buffer with a size larger than the logical addressable space.</exception>
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Usage", "CA2202:Do not dispose objects multiple times")]
+#if !NETSTANDARD
+        [SupportedOSPlatform("windows")]
+#endif
         protected bool Open()
         {
             Close();
@@ -229,12 +229,12 @@ namespace SharedMemory
                     Mmf = MemoryMappedFile.OpenExisting(Name);
 
                     // Retrieve the header from the shared memory in order to initialise the correct size
-                    using (var headerView = Mmf.CreateViewAccessor(0, HeaderOffset + Marshal.SizeOf(typeof(SharedHeader)), MemoryMappedFileAccess.Read))
+                    using (var headerView = Mmf.CreateViewAccessor(0, HeaderOffset + Marshal.SizeOf<SharedHeader>(), MemoryMappedFileAccess.Read))
                     {
                         byte* headerPtr = null;
                         headerView.SafeMemoryMappedViewHandle.AcquirePointer(ref headerPtr);
                         var header = (SharedHeader*)(headerPtr + HeaderOffset);
-                        BufferSize = header->SharedMemorySize - Marshal.SizeOf(typeof(SharedHeader));
+                        BufferSize = header->SharedMemorySize - Marshal.SizeOf<SharedHeader>();
                         headerView.SafeMemoryMappedViewHandle.ReleasePointer();
                     }
 
@@ -242,7 +242,7 @@ namespace SharedMemory
                     View = Mmf.CreateViewAccessor(0, SharedMemorySize, MemoryMappedFileAccess.ReadWrite);
                     View.SafeMemoryMappedViewHandle.AcquirePointer(ref ViewPtr);
                     Header = (SharedHeader*)(ViewPtr + HeaderOffset);
-                    BufferStartPtr = ViewPtr + HeaderOffset + Marshal.SizeOf(typeof(SharedHeader));
+                    BufferStartPtr = ViewPtr + HeaderOffset + Marshal.SizeOf<SharedHeader>();
                 }
             }
             catch
@@ -328,8 +328,8 @@ namespace SharedMemory
             Header = null;
             ViewPtr = null;
             BufferStartPtr = null;
-            View = null;
-            Mmf = null;
+            View = null!;
+            Mmf = null!;
         }
 
         /// <summary>
@@ -340,7 +340,7 @@ namespace SharedMemory
         {
         }
 
-        #endregion
+#endregion
 
         #region Writing
 
@@ -514,7 +514,7 @@ namespace SharedMemory
         {
             if (disposeManagedResources)
             {
-                this.Close();
+                Close();
             }
         }
 

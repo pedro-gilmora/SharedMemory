@@ -20,17 +20,12 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Text;
-
 namespace SharedMemory
 {
+    using System;
     // Only supported in .NET 4.5+ and .NET Standard 2.0
 
     using System.Collections.Concurrent;
-    using System.IO;
     using System.Runtime.InteropServices;
     using System.Threading;
     using System.Threading.Tasks;
@@ -182,7 +177,7 @@ namespace SharedMemory
     /// <summary>
     /// The V1 protocol header
     /// </summary>
-    public struct RpcProtocolHeaderV1
+    public record struct RpcProtocolHeaderV1
     {
         /// <summary>
         /// Message Type
@@ -250,7 +245,7 @@ namespace SharedMemory
     /// </remarks>
     /// <param name="success">was it a success</param>
     /// <param name="data">the message data (if any)</param>
-    public class RpcResponse(bool success, byte[]? data)
+    public class RpcResponse(bool success, byte[]? data) : BufferReader(data ?? [])
     {
 
         /// <summary>
@@ -515,7 +510,16 @@ namespace SharedMemory
     /// <summary>
     /// A simple RPC implementation designed for a single master/slave pair
     /// </summary>
-    public class RpcBuffer : IDisposable
+
+#if !NETSTANDARD
+        [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+#endif
+#if !SG_CONTEXT
+    public 
+#else
+    internal
+#endif
+         class RpcBuffer : IDisposable
     {
         private Mutex masterMutex;
         private long _disposed = 0;
@@ -672,7 +676,7 @@ namespace SharedMemory
                 {
                     masterMutex.Close();
                     masterMutex.Dispose();
-                    masterMutex = null;
+                    masterMutex = null!;
                 }
             }
 
@@ -700,10 +704,9 @@ namespace SharedMemory
                 this.bufferNodeCount = ReadBuffer.NodeCount;
             }
 
-            this.msgBufferLength = Convert.ToInt32(this.bufferCapacity) - protocolLength;
+            msgBufferLength = Convert.ToInt32(this.bufferCapacity) - protocolLength;
 
-
-            Task readTask = new Task(() =>
+            _ = Task.Run(() =>
             {
                 switch (protocolVersion)
                 {
@@ -711,12 +714,14 @@ namespace SharedMemory
                         ReadThreadV1();
                         break;
                 }
-            }, TaskCreationOptions.LongRunning);
+            });
 
-            readTask.Start();
+            //Task readTask = new (, TaskCreationOptions.LongRunning);
+
+            //readTask.Start();
         }
 
-        object mutex = new object();
+        private readonly object mutex = new ();
         ulong messageId = 1;
 
         /// <summary>
@@ -749,7 +754,12 @@ namespace SharedMemory
 
             var request = CreateMessageRequest();
             Task<RpcResponse> sendMessage = SendMessage(request, args, timeoutMs, cancellationToken);
-            return sendMessage.GetAwaiter().GetResult();
+            RpcResponse rpcResponse = sendMessage.GetAwaiter().GetResult();
+
+#if NETCOREAPP
+            Console.WriteLine($"response: success: {rpcResponse.Success}, Length: {rpcResponse.Data?.Length ?? 0}");
+#endif
+            return rpcResponse;
         }
 
         /// <summary>
@@ -766,8 +776,10 @@ namespace SharedMemory
             ThrowIfDisposedOrShutdown();
 
             var request = CreateMessageRequest();
-            Task<RpcResponse> sendMessage = SendMessage(request, MemoryMarshal.TryGetArray(bytes, out var segment) ? segment.Array : null, timeoutMs, cancellationToken);
-            return sendMessage.GetAwaiter().GetResult();
+
+            return SendMessage(request, MemoryMarshal.TryGetArray(bytes, out var segment) ? segment.Array : null, timeoutMs, cancellationToken)
+                .GetAwaiter()
+                .GetResult();
         }
 
         /// <summary>
@@ -784,6 +796,7 @@ namespace SharedMemory
             ThrowIfDisposedOrShutdown();
 
             var request = CreateMessageRequest();
+
             return SendMessage(request, MemoryMarshal.TryGetArray(bytes, out var segment) ? segment.Array : null, timeoutMs, cancellationToken);
         }
 
@@ -819,6 +832,7 @@ namespace SharedMemory
             ThrowIfDisposedOrShutdown();
 
             var request = CreateMessageRequest();
+
             return SendMessage(request, args, timeoutMs, cancellationToken);
         }
 
@@ -851,7 +865,7 @@ namespace SharedMemory
             }
 
             var success = false;
-            switch (this.protocolVersion)
+            switch (protocolVersion) //Check version
             {
                 case RpcProtocol.V1:
                     success = WriteProtocolV1(msgType, msgId, payload, responseMsgId, timeout);
@@ -1002,19 +1016,23 @@ namespace SharedMemory
                     {
                         Statistics.StartWaitRead();
 
-                        l_TempReadBuffer.Read((ptr) =>
+                        l_TempReadBuffer.Read(ptr =>
                         {
                             int readLength = 0;
                             var header = RpcProtocolHeaderV1.FromPointer(ptr);
-                            ptr = ptr + protocolLength;
+                            ptr += protocolLength;
                             readLength += protocolLength;
 
+
+#if NETCOREAPP
+                                Console.WriteLine($"header: {header}");
+#endif
                             RpcRequest request;
                             switch (header.MsgType)
                             {
                                 case MessageType.RpcResponse:
                                 case MessageType.ErrorInRpc:
-                                    if (!Requests.TryGetValue(header.ResponseId, out request))
+                                    if (!Requests.TryGetValue(header.ResponseId, out request!))
                                     {
                                         // The response received does not have a  matching message that was sent
                                         Statistics.DiscardResponse(header.ResponseId);
@@ -1047,17 +1065,21 @@ namespace SharedMemory
                                 {
                                     case MessageType.RpcResponse:
                                     case MessageType.ErrorInRpc:
-                                        Requests.TryRemove(request.MsgId, out RpcRequest removed);
+                                        Requests.TryRemove(request.MsgId, out _);
                                         break;
 
                                     default:
-                                        IncomingRequests.TryRemove(request.MsgId, out removed);
+                                        IncomingRequests.TryRemove(request.MsgId, out _);
                                         break;
                                 }
 
                                 // Full message is ready
 
                                 Statistics.MessageReceived(header.MsgType, request.Data?.Length ?? 0);
+
+#if NETCOREAPP
+                                Console.WriteLine($"header.MsgType: {header.MsgType}, request.Data.Length: {request.Data?.Length ?? 0}");
+#endif
 
                                 switch (header.MsgType)
                                 {
@@ -1254,20 +1276,20 @@ namespace SharedMemory
             if (WriteBuffer != null)
             {
                 WriteBuffer.Dispose();
-                WriteBuffer = null;
+                WriteBuffer = null!;
             }
 
             if (ReadBuffer != null)
             {
                 ReadBuffer.Dispose();
-                ReadBuffer = null;
+                ReadBuffer = null!;
             }
 
             if (masterMutex != null)
             {
                 masterMutex.Close();
                 masterMutex.Dispose();
-                masterMutex = null;
+                masterMutex = null!;
             }
 
             // Mark as DisposeFinished

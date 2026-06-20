@@ -1,9 +1,8 @@
 using System;
+using System.IO;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics;
-using System.IO;
-using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -12,7 +11,7 @@ namespace SharedMemory
 {
     public class BufferReader(byte[] buffer, Encoding? encoding = null)
     {
-        protected ReadOnlyMemory<byte> _buffer = System.MemoryExtensions.AsMemory(buffer);
+        protected ReadOnlyMemory<byte> _buffer = MemoryExtensions.AsMemory(buffer);
         Decoder? _decoder;
         char[]? _charBuffer = null;
         private const int MaxCharBytesSize = 128;
@@ -210,7 +209,7 @@ namespace SharedMemory
         {
             return _buffer.Span[_pos..];
         }
-
+        public void Reset() => _pos = 0;
         static class StringBuilderCache
         {
             // The value 360 was chosen in discussion with performance experts as a compromise between using

@@ -24,9 +24,7 @@
 //   "Fast IPC Communication Using Shared Memory and InterlockedCompareExchange"
 //   http://www.codeproject.com/Articles/14740/Fast-IPC-Communication-Using-Shared-Memory-and-Int
 using System;
-using System.Linq;
 using System.Reflection;
-using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 
 namespace SharedMemory
@@ -46,53 +44,7 @@ namespace SharedMemory
         /// <summary>
         /// Cached size of T as determined by <see cref="System.Runtime.InteropServices.Marshal.SizeOf(Type)"/>.
         /// </summary>
-        public static readonly int Size = Unsafe.SizeOf<T>();
-        
+        public static readonly int Size = Unsafe.SizeOf<T>();        
 
-        /// <summary>
-        /// Performs once of type compatibility check.
-        /// </summary>
-        /// <exception cref="ArgumentException">Thrown if the type T is incompatible</exception>
-        static FastStructure()
-        {
-            // Performs compatibility checks upon T
-            CheckTypeCompatibility(typeof(T));
-        }
-
-        private static void CheckTypeCompatibility(Type t, System.Collections.Generic.HashSet<Type>? checkedItems = null)
-        {
-            checkedItems ??=
-                [
-                    typeof(char),
-                    typeof(byte),
-                    typeof(sbyte),
-                    typeof(bool),
-                    typeof(double),
-                    typeof(float),
-                    typeof(decimal),
-                    typeof(int),
-                    typeof(short),
-                    typeof(long),
-                    typeof(uint),
-                    typeof(ushort),
-                    typeof(ulong),
-                    typeof(IntPtr),
-                    typeof(void*),
-                ];
-
-            if (!checkedItems.Add(t))
-                return;
-
-            FieldInfo[] fi = t.GetFields(BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic);
-            foreach (FieldInfo info in fi)
-            {
-                if (!info.FieldType.IsPrimitive && !info.FieldType.IsValueType && !info.FieldType.IsPointer)
-                {
-                    throw new ArgumentException(string.Format("Non-value types are not supported: field {0} is of type {1} in structure {2}", info.Name, info.FieldType.Name, info.DeclaringType.Name));
-                }
-
-                CheckTypeCompatibility(info.FieldType, checkedItems);
-            }
-        }
     }
 }

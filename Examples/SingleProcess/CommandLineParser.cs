@@ -1099,7 +1099,7 @@ namespace CommandLine
                 this.defaultValue = Parser.DefaultValue(attribute, field);
                 this.elementType = ElementType(field);
                 this.flags = Flags(attribute, field);
-                this.field = field;
+                this._field = field;
                 this.seenValue = false;
                 this.reporter = reporter;
                 this.isDefault = attribute != null && attribute is DefaultArgumentAttribute;
@@ -1127,14 +1127,14 @@ namespace CommandLine
                 {
                     if (this.IsCollection)
                     {
-                        this.field.SetValue(destination, this.collectionValues.ToArray(this.elementType));
+                        this._field.SetValue(destination, this.collectionValues.ToArray(this.elementType));
                     }
                 }
                 else
                 {
                     if (this.HasDefaultValue)
                     {
-                        this.field.SetValue(destination, this.DefaultValue);
+                        this._field.SetValue(destination, this.DefaultValue);
                     }
                 }
                 
@@ -1185,7 +1185,7 @@ namespace CommandLine
                 }
                 else
                 {
-                    this.field.SetValue(destination, newValue);
+                    this._field.SetValue(destination, newValue);
                 }
                 
                 return true;
@@ -1405,15 +1405,15 @@ namespace CommandLine
 
                             builder.Append(":{");
                             bool first = true;
-                            foreach (FieldInfo field in valueType.GetFields())
+                            foreach (FieldInfo @field in valueType.GetFields())
                             {
-                                if (field.IsStatic)
+                                if (@field.IsStatic)
                                 {
                                     if (first)
                                         first = false;
                                     else
                                         builder.Append('|');
-                                    builder.Append(field.Name);
+                                    builder.Append(@field.Name);
                                 }
                             }
                             builder.Append('}');
@@ -1446,7 +1446,7 @@ namespace CommandLine
             
             public Type Type
             {
-                get { return field.FieldType; }
+                get { return _field.FieldType; }
             }
             
             public bool IsCollection
@@ -1466,7 +1466,7 @@ namespace CommandLine
             private bool explicitShortName;
             private object defaultValue;
             private bool seenValue;
-            private FieldInfo field;
+            private FieldInfo _field;
             private Type elementType;
             private ArgumentType flags;
             private ArrayList collectionValues;

@@ -23,13 +23,7 @@
 // The SharedMemory library is inspired by the following Code Project article:
 //   "Fast IPC Communication Using Shared Memory and InterlockedCompareExchange"
 //   http://www.codeproject.com/Articles/14740/Fast-IPC-Communication-Using-Shared-Memory-and-Int
-
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Runtime.InteropServices;
-using System.Security.Permissions;
-using System.Text;
 using System.Threading;
 
 namespace SharedMemory
@@ -103,7 +97,7 @@ namespace SharedMemory
         /// <returns>true if the read lock was able to be acquired, otherwise false.</returns>
         /// <exception cref="System.ArgumentOutOfRangeException"><paramref name="millisecondsTimeout"/> is a negative number other than -1, which represents an infinite time-out.</exception>
         /// <remarks>If <paramref name="millisecondsTimeout"/> is <see cref="System.Threading.Timeout.Infinite" /> (-1), then attempting to acquire a read lock after acquiring a write lock on the same thread will result in a deadlock.</remarks>
-        public bool AcquireReadLock(int millisecondsTimeout = System.Threading.Timeout.Infinite)
+        public bool AcquireReadLock(int millisecondsTimeout = Timeout.Infinite)
         {
             if (!ReadWaitEvent.WaitOne(millisecondsTimeout))
                 return false;
@@ -126,7 +120,7 @@ namespace SharedMemory
         /// <returns>true if the write lock was able to be acquired, otherwise false.</returns>
         /// <exception cref="System.ArgumentOutOfRangeException"><paramref name="millisecondsTimeout"/> is a negative number other than -1, which represents an infinite time-out.</exception>
         /// <remarks>If <paramref name="millisecondsTimeout"/> is <see cref="System.Threading.Timeout.Infinite" /> (-1), then attempting to acquire a write lock after acquiring a read lock on the same thread will result in a deadlock.</remarks>
-        public bool AcquireWriteLock(int millisecondsTimeout = System.Threading.Timeout.Infinite)
+        public bool AcquireWriteLock(int millisecondsTimeout = Timeout.Infinite)
         {
             if (!WriteWaitEvent.WaitOne(millisecondsTimeout))
                 return false;

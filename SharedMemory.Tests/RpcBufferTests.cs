@@ -20,16 +20,17 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using SharedMemory;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using Microsoft.VisualStudio.TestTools.UnitTesting;
-using System.Threading.Tasks;
-using System.Runtime.InteropServices;
-using System.Threading;
-using SharedMemory;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Threading.Tasks.Dataflow;
 
 namespace SharedMemory.Tests
 {
@@ -460,6 +461,65 @@ namespace SharedMemory.Tests
         }
 
         record Person(int Id, string Name);
+
+        [TestMethod]
+        public void RPC_SlaveStreaming()
+        {
+            var ipcName = Guid.CreateVersion7().ToString();
+            //RpcBuffer ipcMaster = null!;
+            RpcBuffer ipcSlave = null!;
+
+            int i = 0;
+            ipcSlave = new RpcBuffer(ipcName, (msgId, payload) =>
+            {
+                if (payload is null)
+                {
+                    if (i == 0)
+                        while (i < 3)
+                        {
+                            ipcSlave.RemoteRequest([(byte)Interlocked.Increment(ref i)]);
+                        }
+                }
+
+                ipcSlave.RemoteRequest(null);
+                //var current = MemoryPackSerializer.Deserialize<int>(payload);
+                //if (payload[0] == 10)
+                //{
+                //	taskComplete.SetResult();
+                //	return null;
+                //}
+            });
+
+            int y = 0;
+
+            foreach (var element in GetEnumerable())
+            {
+                Assert.AreEqual(++y, element);
+            }
+
+            IEnumerable<byte> GetEnumerable()
+            {
+                BufferBlock<byte> _buffer = new();
+                using RpcBuffer rpc = new(ipcName, (id, payload) =>
+                {
+                    if (payload?.Length > 0)
+                    {
+                        _buffer.Post(payload[0]);
+                    }
+                    else
+                    {
+                        _buffer.Complete();
+                    }
+                });
+
+                rpc.RemoteRequest();
+
+                foreach (var item in _buffer.ReceiveAllAsync().ToBlockingEnumerable())
+                {
+                    yield return item;
+                }
+            }
+        }
 
         [TestMethod]
         public void RPC_Dispose()
