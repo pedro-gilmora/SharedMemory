@@ -1,4 +1,4 @@
-﻿// SharedMemory (File: SharedMemory\RpcBuffer.cs)
+// SharedMemory (File: SharedMemory\RpcBuffer.cs)
 // Copyright (c) 2020 Justin Stenning
 // http://spazzarama.com
 //
@@ -226,7 +226,7 @@ namespace SharedMemory
         /// <summary>
         /// A wait event that is signaled when a response is ready
         /// </summary>
-        public TaskCompletionSource<RpcResponse> ResponseReady { get; } = new TaskCompletionSource<RpcResponse>();
+        public TaskCompletionSource<RpcResponse> ResponseReady { get; } = new TaskCompletionSource<RpcResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
         /// <summary>
         /// Was the request successful
         /// </summary>
@@ -756,9 +756,6 @@ namespace SharedMemory
             Task<RpcResponse> sendMessage = SendMessage(request, args, timeoutMs, cancellationToken);
             RpcResponse rpcResponse = sendMessage.GetAwaiter().GetResult();
 
-#if NETCOREAPP
-            Console.WriteLine($"response: success: {rpcResponse.Success}, Length: {rpcResponse.Data?.Length ?? 0}");
-#endif
             return rpcResponse;
         }
 
@@ -1024,9 +1021,6 @@ namespace SharedMemory
                             readLength += protocolLength;
 
 
-#if NETCOREAPP
-                                Console.WriteLine($"header: {header}");
-#endif
                             RpcRequest request;
                             switch (header.MsgType)
                             {
@@ -1077,9 +1071,6 @@ namespace SharedMemory
 
                                 Statistics.MessageReceived(header.MsgType, request.Data?.Length ?? 0);
 
-#if NETCOREAPP
-                                Console.WriteLine($"header.MsgType: {header.MsgType}, request.Data.Length: {request.Data?.Length ?? 0}");
-#endif
 
                                 switch (header.MsgType)
                                 {
@@ -1098,9 +1089,10 @@ namespace SharedMemory
                                             {
                                                 await ProcessCallHandler(request).ConfigureAwait(false);
                                             }
-                                            catch (Exception _) when (_ is ObjectDisposedException or InvalidOperationException)
+                                            catch (Exception _)
                                             {
-                                                throw;
+                                                if (_ is ObjectDisposedException or InvalidOperationException)
+                                                    throw;
                                             }
                                         });
                                         break;

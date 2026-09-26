@@ -41,7 +41,7 @@ namespace RpcTest
             int loopCount = 2000;
             int bufSize = 1024 * 500;
             int bufferCapacity = bufSize + 64; // buf size + enough room for protocol header
-            int threadCount = 1;
+            int threadCount = 32;
             int dataListCount = 256;
             
             // Generate random data to be written
@@ -97,7 +97,8 @@ namespace RpcTest
             }
 
             watch.Stop();
-            Console.WriteLine($"{count} in {watch.Elapsed}, {(int)(count / watch.Elapsed.TotalSeconds)} requests / sec");
+
+            Console.WriteLine($"{count} in {watch.Elapsed}, {(int)(count / watch.Elapsed.TotalSeconds)} requests / sec. Thread counts:{threadCount}");
 
             Console.ReadLine();
         }

@@ -205,7 +205,7 @@ namespace SharedMemory
         [UnsafeAccessor(UnsafeAccessorKind.StaticMethod, Name = "ToDecimal")]
         static extern decimal ToDecimal(decimal _, ReadOnlySpan<byte> span);
 
-        internal ReadOnlySpan<byte> AsSpan()
+        public ReadOnlySpan<byte> AsSpan()
         {
             return _buffer.Span[_pos..];
         }
@@ -316,7 +316,7 @@ namespace SharedMemory
         /// <summary>
         /// Returns the data written to the underlying buffer so far, as a <see cref="ReadOnlySpan{byte}"/>.
         /// </summary>
-        public ReadOnlySpan<byte> WrittenSpan => new(_buffer, 0, _index);
+        public ReadOnlySpan<byte> WrittenSpan => _buffer.AsSpan(0, _index);
 
         /// <summary>
         /// Returns the amount of data written to the underlying buffer so far.
@@ -524,17 +524,13 @@ namespace SharedMemory
             ReadOnlySpan<byte> readOnlySpan = source;
             while (true)
             {
-                int num = Math.Min(destination.Length, readOnlySpan.Length);
+                var num = Math.Min(destination.Length, readOnlySpan.Length);
                 readOnlySpan[..num].CopyTo(destination);
                 Advance(num);
-                readOnlySpan = readOnlySpan[num..];
-                if (readOnlySpan.Length > 0)
-                {
-                    destination = GetSpan(readOnlySpan.Length);
-                    continue;
-                }
 
-                break;
+                if ((readOnlySpan = readOnlySpan[num..]).Length <= 0) break; 
+
+                destination = GetSpan(readOnlySpan.Length);
             }
         }
 
