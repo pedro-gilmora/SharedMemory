@@ -740,11 +740,9 @@ namespace SharedMemory
         /// <returns></returns>
         protected RpcRequest CreateMessageRequest()
         {
-            RpcRequest request = new RpcRequest();
-            lock (mutex)
-            {
-                request.MsgId = messageId++;
-            }
+            RpcRequest request = new ();
+
+            lock (mutex)  request.MsgId = messageId++;
 
             return request;
         }
@@ -763,8 +761,8 @@ namespace SharedMemory
             ThrowIfDisposedOrShutdown();
 
             var request = CreateMessageRequest();
-            Task<RpcResponse> sendMessage = SendMessage(request, args, timeoutMs, cancellationToken);
-            RpcResponse rpcResponse = sendMessage.GetAwaiter().GetResult();
+            var sendMessage = SendMessage(request, args, timeoutMs, cancellationToken);
+            var rpcResponse = sendMessage.GetAwaiter().GetResult();
 
             return rpcResponse;
         }
@@ -905,7 +903,7 @@ namespace SharedMemory
                 Requests[request.MsgId] = request;
             }
 
-            var success = false;
+            bool success ;
             switch (protocolVersion) //Check version
             {
                 case RpcProtocol.V1:
@@ -1036,10 +1034,21 @@ namespace SharedMemory
 
         /// <inheritdoc cref="Send{TState}(TState, Action{System.Buffers.IBufferWriter{byte}, TState}, int, CancellationToken)"/>
         public Task<RpcResponse> SendAsync<TState>(TState state, Action<System.Buffers.IBufferWriter<byte>, TState> write, int timeoutMs = defaultTimeoutMs, CancellationToken cancellationToken = default)
+            => SendCore(state, write, null, timeoutMs, cancellationToken);
+
+        /// <summary>
+        /// Like <see cref="RemoteStreamAsync(byte[], StreamItemHandler, CancellationToken)"/> but the request is written by
+        /// <paramref name="write"/> straight into the shared-memory node (no intermediate array).
+        /// </summary>
+        public Task<RpcResponse> RemoteStreamAsync<TState>(TState state, Action<System.Buffers.IBufferWriter<byte>, TState> write, StreamItemHandler onItem, CancellationToken cancellationToken = default)
+            => SendCore(state, write, onItem, Timeout.Infinite, cancellationToken);
+
+        Task<RpcResponse> SendCore<TState>(TState state, Action<System.Buffers.IBufferWriter<byte>, TState> write, StreamItemHandler? onItem, int timeoutMs, CancellationToken cancellationToken)
         {
             ThrowIfDisposedOrShutdown();
 
             var request = CreateMessageRequest();
+            request.OnStreamItem = onItem;
             Requests[request.MsgId] = request;
 
             bool success;
