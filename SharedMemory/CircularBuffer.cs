@@ -573,6 +573,29 @@ namespace SharedMemory
             return amount;
         }
 
+        /// <summary>Writes into a node through <paramref name="state"/> (by ref) so callers can use a static, non-capturing callback.</summary>
+        public delegate int NodeWriteFunc<TState>(IntPtr node, ref TState state);
+
+        /// <inheritdoc cref="Write(Func{IntPtr, int}, int)"/>
+        public int Write<TState>(ref TState state, NodeWriteFunc<TState> writeFunc, int timeout = 1000)
+        {
+            Node* node = GetNodeForWriting(timeout);
+            if (node == null) return 0;
+
+            int amount = 0;
+            try
+            {
+                amount = writeFunc(new IntPtr(BufferStartPtr + node->Offset), ref state);
+                node->AmountWritten = amount;
+            }
+            finally
+            {
+                PostNode(node);
+            }
+
+            return amount;
+        }
+
         #endregion
 
         #region Node Reading
@@ -592,15 +615,22 @@ namespace SharedMemory
         /// <returns>An unsafe pointer to the node if successful, otherwise null</returns>
         protected virtual Node* GetNodeForReading(int timeout)
         {
+            var spin = new SpinWait();
             for (; ; )
             {
                 int blockIndex = _nodeHeader->ReadStart;
                 Node* node = this[blockIndex];
                 if (blockIndex == _nodeHeader->WriteEnd)
                 {
+                    // ponytail: spin briefly before the kernel wait; streams post nodes back to back and a wake-up costs more than a few spins.
+                    if (!spin.NextSpinWillYield) { spin.SpinOnce(-1); continue; }
+
                     // No data is available, wait for it
                     if (DataExists.WaitOne(timeout))
+                    {
+                        spin.Reset();
                         continue;
+                    }
 
                     // Timeout
                     return null;
