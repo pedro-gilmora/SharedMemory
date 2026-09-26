@@ -172,6 +172,10 @@ namespace SharedMemory
         /// An error message
         /// </summary>
         ErrorInRpc = 3,
+        /// <summary>
+        /// An item of a stream; <c>ResponseId</c> is the MsgId of the request that opened it
+        /// </summary>
+        StreamItem = 4,
     }
 
     /// <summary>
@@ -228,6 +232,10 @@ namespace SharedMemory
         /// </summary>
         public TaskCompletionSource<RpcResponse> ResponseReady { get; } = new TaskCompletionSource<RpcResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
         /// <summary>
+        /// Receives the stream items addressed to this request (invoked on the reader thread, in order)
+        /// </summary>
+        internal StreamItemHandler? OnStreamItem { get; set; }
+        /// <summary>
         /// Was the request successful
         /// </summary>
         public bool IsSuccess { get; internal set; }
@@ -245,6 +253,11 @@ namespace SharedMemory
     /// </remarks>
     /// <param name="success">was it a success</param>
     /// <param name="data">the message data (if any)</param>
+    /// <summary>
+    /// Receives a stream item; the span is only valid during the call (it may point into shared memory).
+    /// </summary>
+    public delegate void StreamItemHandler(ReadOnlySpan<byte> item);
+
     public class RpcResponse(bool success, byte[]? data) : BufferReader(data ?? [])
     {
 
@@ -706,7 +719,8 @@ namespace SharedMemory
 
             msgBufferLength = Convert.ToInt32(this.bufferCapacity) - protocolLength;
 
-            _ = Task.Run(() =>
+            // Hilo dedicado: el bucle lector bloquea; en el pool sufre inanicion con llamadas sync concurrentes.
+            _ = Task.Factory.StartNew(() =>
             {
                 switch (protocolVersion)
                 {
@@ -714,11 +728,7 @@ namespace SharedMemory
                         ReadThreadV1();
                         break;
                 }
-            });
-
-            //Task readTask = new (, TaskCreationOptions.LongRunning);
-
-            //readTask.Start();
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
 
         private readonly object mutex = new ();
@@ -774,7 +784,7 @@ namespace SharedMemory
 
             var request = CreateMessageRequest();
 
-            return SendMessage(request, MemoryMarshal.TryGetArray(bytes, out var segment) ? segment.Array : null, timeoutMs, cancellationToken)
+            return SendMessage(request, bytes, timeoutMs, cancellationToken)
                 .GetAwaiter()
                 .GetResult();
         }
@@ -794,7 +804,7 @@ namespace SharedMemory
 
             var request = CreateMessageRequest();
 
-            return SendMessage(request, MemoryMarshal.TryGetArray(bytes, out var segment) ? segment.Array : null, timeoutMs, cancellationToken);
+            return SendMessage(request, bytes, timeoutMs, cancellationToken);
         }
 
         /// <summary>
@@ -833,7 +843,41 @@ namespace SharedMemory
             return SendMessage(request, args, timeoutMs, cancellationToken);
         }
 
-        async Task<RpcResponse> SendMessage(RpcRequest request, byte[]? payload, int timeout = defaultTimeoutMs, CancellationToken cancellationToken = default)
+        /// <summary>
+        /// Sends a request whose remote handler streams items back with <see cref="SendStreamItem"/>. Items are delivered
+        /// to <paramref name="onItem"/> in order on the reader thread; the returned task completes with the final response.
+        /// No timeout: streams may be long, cancel with <paramref name="cancellationToken"/>.
+        /// </summary>
+        public Task<RpcResponse> RemoteStreamAsync(byte[]? args, StreamItemHandler onItem, CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposedOrShutdown();
+
+            var request = CreateMessageRequest();
+            request.OnStreamItem = onItem;
+
+            return SendMessage(request, args, Timeout.Infinite, cancellationToken);
+        }
+
+        /// <summary>
+        /// Sends a stream item addressed to the incoming request <paramref name="requestMsgId"/> (the msgId given to the handler).
+        /// Only the peer that sent that request accepts it.
+        /// </summary>
+        // ponytail: like every V1 write, a node that stays full for >1s is dropped; fine while the client reader only enqueues.
+        /// <remarks>The item is written by <paramref name="write"/> straight into the shared-memory node (no intermediate array).</remarks>
+        public bool SendStreamItem<TState>(ulong requestMsgId, TState state, Action<System.Buffers.IBufferWriter<byte>, TState> write)
+        {
+            ThrowIfDisposedOrShutdown();
+
+            ulong msgId;
+            lock (mutex) msgId = messageId++;
+
+            if (!WriteProtocolV1(MessageType.StreamItem, msgId, requestMsgId, state, write, out int size)) return false;
+
+            Statistics.MessageSent(MessageType.StreamItem, size);
+            return true;
+        }
+
+        async Task<RpcResponse> SendMessage(RpcRequest request, ReadOnlyMemory<byte> payload, int timeout = defaultTimeoutMs, CancellationToken cancellationToken = default)
         {
             return await SendMessage(MessageType.RpcRequest, request, payload, timeout: timeout, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
@@ -850,7 +894,7 @@ namespace SharedMemory
         /// <returns></returns>
         /// <exception cref="ObjectDisposedException">Thrown if this object has been disposed</exception>
         /// <exception cref="InvalidOperationException">Thrown if the underlying buffers have been closed by the channel owner</exception>
-        protected virtual Task<RpcResponse> SendMessage(MessageType msgType, RpcRequest request, byte[]? payload, ulong responseMsgId = 0, int timeout = defaultTimeoutMs, CancellationToken cancellationToken = default)
+        protected virtual Task<RpcResponse> SendMessage(MessageType msgType, RpcRequest request, ReadOnlyMemory<byte> payload, ulong responseMsgId = 0, int timeout = defaultTimeoutMs, CancellationToken cancellationToken = default)
         {
             ThrowIfDisposedOrShutdown();
 
@@ -874,7 +918,7 @@ namespace SharedMemory
 
             if (success)
             {
-                Statistics.MessageSent(msgType, payload?.Length ?? 0);
+                Statistics.MessageSent(msgType, payload.Length);
             }
 
             if (success && msgType == MessageType.RpcRequest)
@@ -895,7 +939,7 @@ namespace SharedMemory
             }
         }
 
-        bool WriteProtocolV1(MessageType msgType, ulong msgId, byte[]? msg, ulong responseMsgId, int timeout)
+        bool WriteProtocolV1(MessageType msgType, ulong msgId, ReadOnlyMemory<byte> msgMem, ulong responseMsgId, int timeout)
         {
             if (Disposed)
             {
@@ -907,15 +951,17 @@ namespace SharedMemory
                 return false;
             }
 
+            var msg = msgMem.Span;
+
             // Send the request packets
             lock (lock_sendQ)
             {
                 // Split message into correct packet size
                 int i = 0;
-                int left = msg?.Length ?? 0;
+                int left = msg.Length;
 
                 byte[] pMsg;
-                int iLen = msg?.Length ?? 0;
+                int iLen = msg.Length;
                 ushort totalPackets = (iLen == 0) ? (ushort)1 : Convert.ToUInt16(Math.Ceiling((double)iLen / (double)msgBufferLength));
                 ushort currentPacket = 1;
 
@@ -935,7 +981,7 @@ namespace SharedMemory
                         MsgId = msgId,
                         CurrentPacket = currentPacket,
                         TotalPackets = totalPackets,
-                        PayloadSize = msg?.Length ?? 0,
+                        PayloadSize = msg.Length,
                         ResponseId = responseMsgId
                     };
 
@@ -944,8 +990,8 @@ namespace SharedMemory
                     if (left > msgBufferLength)
                     {
                         // Writing payload
-                        if (msg != null && msg.Length > 0)
-                            msg.AsSpan(i, msgBufferLength).CopyTo(pMsg.AsSpan(protocolLength, msgBufferLength));
+                        if (msg.Length > 0)
+                            msg.Slice(i, msgBufferLength).CopyTo(pMsg.AsSpan(protocolLength, msgBufferLength));
 
                         left -= msgBufferLength;
                         i += msgBufferLength;
@@ -953,9 +999,9 @@ namespace SharedMemory
                     else
                     {
                         // Writing last packet of payload
-                        if (msg != null && msg.Length > 0)
+                        if (msg.Length > 0)
                         {
-                            msg.AsSpan(i, left).CopyTo(pMsg.AsSpan(protocolLength, left));
+                            msg.Slice(i, left).CopyTo(pMsg.AsSpan(protocolLength, left));
                         }
 
                         left = 0;
@@ -981,6 +1027,204 @@ namespace SharedMemory
             return true;
         }
 
+        /// <summary>
+        /// Sends a request whose payload is written by <paramref name="write"/> directly into the shared-memory node
+        /// (no intermediate buffer). Payloads larger than one packet spill to a reusable buffer and are split as usual.
+        /// </summary>
+        public RpcResponse Send<TState>(TState state, Action<System.Buffers.IBufferWriter<byte>, TState> write, int timeoutMs = defaultTimeoutMs, CancellationToken cancellationToken = default)
+            => SendAsync(state, write, timeoutMs, cancellationToken).GetAwaiter().GetResult();
+
+        /// <inheritdoc cref="Send{TState}(TState, Action{System.Buffers.IBufferWriter{byte}, TState}, int, CancellationToken)"/>
+        public Task<RpcResponse> SendAsync<TState>(TState state, Action<System.Buffers.IBufferWriter<byte>, TState> write, int timeoutMs = defaultTimeoutMs, CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposedOrShutdown();
+
+            var request = CreateMessageRequest();
+            Requests[request.MsgId] = request;
+
+            bool success;
+            int size;
+            try
+            {
+                success = WriteProtocolV1(MessageType.RpcRequest, request.MsgId, 0, state, write, out size);
+            }
+            catch
+            {
+                Requests.TryRemove(request.MsgId, out _);
+                throw;
+            }
+
+            if (!success)
+            {
+                Requests.TryRemove(request.MsgId, out _);
+                return Task.FromResult(new RpcResponse(false, null));
+            }
+
+            Statistics.MessageSent(MessageType.RpcRequest, size);
+
+            return request.ResponseReady.Task.TimeoutOrCancel(timeoutMs, cancellationToken);
+        }
+
+        NodeWriter? _nodeWriter;
+
+        unsafe bool WriteProtocolV1<TState>(MessageType msgType, ulong msgId, ulong responseId, TState state, Action<System.Buffers.IBufferWriter<byte>, TState> write, out int size)
+        {
+            size = 0;
+
+            if (Disposed || WriteBuffer.ShuttingDown) return false;
+
+            lock (lock_sendQ)
+            {
+                var w = _nodeWriter ??= new NodeWriter();
+                int hdr = protocolLength, chunk = msgBufferLength;
+
+                Statistics.StartWaitWrite();
+                var ctx = new FirstPacket<TState>(w, hdr, chunk, msgType, msgId, responseId, state, write);
+                var bytes = WriteBuffer.Write(ref ctx, static (IntPtr ptr, ref FirstPacket<TState> c) =>
+                {
+                    byte* p = (byte*)ptr;
+                    var w = c.Writer;
+                    int hdr = c.Hdr, chunk = c.Chunk;
+                    w.Reset(p + hdr, chunk);
+
+                    try
+                    {
+                        c.Write(w, c.State);
+                    }
+                    catch (Exception ex)
+                    {
+                        // The node is already reserved: publish an orphan response (ResponseId 0) that the reader discards.
+                        c.Error = ex;
+                        WriteHeader(p, new RpcProtocolHeaderV1 { MsgType = MessageType.RpcResponse, CurrentPacket = 1, TotalPackets = 1 });
+                        return hdr;
+                    }
+
+                    int len = w.Written, first = Math.Min(len, chunk);
+                    WriteHeader(p, new RpcProtocolHeaderV1
+                    {
+                        MsgType = c.MsgType,
+                        MsgId = c.MsgId,
+                        ResponseId = c.ResponseId,
+                        CurrentPacket = 1,
+                        TotalPackets = len == 0 ? (ushort)1 : checked((ushort)((len + chunk - 1) / chunk)),
+                        PayloadSize = len
+                    });
+
+                    if (w.Spilled) w.SpillData[..first].CopyTo(new Span<byte>(p + hdr, first));
+
+                    return hdr + first;
+                }, 1000);
+
+                if (ctx.Error is { } error) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
+                if (bytes == 0) return false;
+
+                Statistics.WritePacket(bytes - hdr);
+                int total_size = size = w.Written;
+
+                if (!w.Spilled || total_size <= chunk) return true;
+
+                return WriteRemainingPackets(msgType, msgId, responseId, w, hdr, chunk, total_size);
+            }
+        }
+
+        // Separate method: its closure would otherwise be allocated on every WriteProtocolV1 call.
+        unsafe bool WriteRemainingPackets(MessageType msgType, ulong msgId, ulong responseId, NodeWriter w, int hdr, int chunk, int total_size)
+        {
+            {
+                int bytes;
+
+                // Remaining packets of a spilled payload (copy path, only for payloads > one packet).
+                ushort total = checked((ushort)((total_size + chunk - 1) / chunk));
+                for (ushort packet = 2; packet <= total; packet++)
+                {
+                    if (WriteBuffer.ShuttingDown) return false;
+
+                    int offset = (packet - 1) * chunk, len = Math.Min(chunk, total_size - offset);
+                    ushort current = packet;
+
+                    bytes = WriteBuffer.Write(ptr =>
+                    {
+                        byte* p = (byte*)ptr;
+                        WriteHeader(p, new RpcProtocolHeaderV1 { MsgType = msgType, MsgId = msgId, ResponseId = responseId, CurrentPacket = current, TotalPackets = total, PayloadSize = total_size });
+                        w.SpillData.Slice(offset, len).CopyTo(new Span<byte>(p + hdr, len));
+                        return hdr + len;
+                    }, 1000);
+
+                    if (bytes == 0) return false;
+
+                    Statistics.WritePacket(bytes - hdr);
+                }
+
+                return true;
+            }
+        }
+
+        static unsafe void WriteHeader(byte* p, RpcProtocolHeaderV1 header) => MemoryMarshal.Write(new Span<byte>(p, FastStructure<RpcProtocolHeaderV1>.Size), in header);
+
+        struct FirstPacket<TState>(NodeWriter writer, int hdr, int chunk, MessageType msgType, ulong msgId, ulong responseId, TState state, Action<System.Buffers.IBufferWriter<byte>, TState> write)
+        {
+            public readonly NodeWriter Writer = writer;
+            public readonly int Hdr = hdr, Chunk = chunk;
+            public readonly MessageType MsgType = msgType;
+            public readonly ulong MsgId = msgId, ResponseId = responseId;
+            public readonly TState State = state;
+            public readonly Action<System.Buffers.IBufferWriter<byte>, TState> Write = write;
+            public Exception? Error;
+        }
+
+        /// <summary>Writes into a shared-memory node; spills to a reusable heap buffer once the node is full.</summary>
+        // ponytail: the spill buffer keeps its peak size for the RpcBuffer lifetime; pool it if big payloads become common.
+        sealed unsafe class NodeWriter : System.Buffers.IBufferWriter<byte>
+        {
+            byte* _dst;
+            int _cap, _written;
+            System.Buffers.ArrayBufferWriter<byte>? _spill;
+
+            public bool Spilled { get; private set; }
+            public int Written => Spilled ? _spill!.WrittenCount : _written;
+            public ReadOnlySpan<byte> SpillData => _spill!.WrittenSpan;
+
+            public void Reset(byte* dst, int cap)
+            {
+                _dst = dst;
+                _cap = cap;
+                _written = 0;
+                _spill?.ResetWrittenCount();
+                Spilled = false;
+            }
+
+            public void Advance(int count)
+            {
+                if (Spilled) _spill!.Advance(count);
+                else _written += count;
+            }
+
+            public Span<byte> GetSpan(int sizeHint = 0)
+            {
+                if (!Spilled && _cap - _written >= Math.Max(sizeHint, 1)) return new Span<byte>(_dst + _written, _cap - _written);
+
+                Spill();
+                return _spill!.GetSpan(sizeHint);
+            }
+
+            public Memory<byte> GetMemory(int sizeHint = 0)
+            {
+                Spill();
+                return _spill!.GetMemory(sizeHint);
+            }
+
+            void Spill()
+            {
+                if (Spilled) return;
+
+                _spill ??= new System.Buffers.ArrayBufferWriter<byte>(Math.Max(_cap * 2, 256));
+                new ReadOnlySpan<byte>(_dst, _written).CopyTo(_spill.GetSpan(_written));
+                _spill.Advance(_written);
+                Spilled = true;
+            }
+        }
+
+        private Func<IntPtr, int>? _readPacket;
         private bool m_ReadThreadIsReading = false;
         private readonly object m_ReadThreadIsReadingLock = new();
 
@@ -1013,7 +1257,7 @@ namespace SharedMemory
                     {
                         Statistics.StartWaitRead();
 
-                        l_TempReadBuffer.Read(ptr =>
+                        l_TempReadBuffer.Read(_readPacket ??= ptr =>
                         {
                             int readLength = 0;
                             var header = RpcProtocolHeaderV1.FromPointer(ptr);
@@ -1033,11 +1277,20 @@ namespace SharedMemory
                                         return protocolLength;
                                     }
                                     break;
-                                default:
-                                    request = IncomingRequests.GetOrAdd(header.MsgId, new RpcRequest
+                                case MessageType.StreamItem when !Requests.ContainsKey(header.ResponseId):
+                                    // Item of a stream opened by another peer
+                                    Statistics.DiscardResponse(header.ResponseId);
+                                    return protocolLength;
+                                case MessageType.StreamItem when header.TotalPackets == 1 && Requests.TryGetValue(header.ResponseId, out var streamOwner):
                                     {
-                                        MsgId = header.MsgId
-                                    });
+                                        // Fast path: single-packet item goes straight to its owner, no RpcRequest/TCS per item
+                                        int size = header.PayloadSize;
+                                        Statistics.MessageReceived(header.MsgType, size);
+                                        unsafe { streamOwner.OnStreamItem?.Invoke(new ReadOnlySpan<byte>((void*)ptr, size)); }
+                                        return protocolLength + size;
+                                    }
+                                default:
+                                    request = IncomingRequests.GetOrAdd(header.MsgId, static id => new RpcRequest { MsgId = id });
                                     break;
                             }
 
@@ -1082,19 +1335,12 @@ namespace SharedMemory
                                         request.IsSuccess = false;
                                         request.ResponseReady.SetResult(new RpcResponse(request.IsSuccess, request.Data));
                                         break;
+                                    case MessageType.StreamItem:
+                                        if (Requests.TryGetValue(header.ResponseId, out var owner))
+                                            owner.OnStreamItem?.Invoke(request.Data ?? []);
+                                        break;
                                     case MessageType.RpcRequest:
-                                        _ = Task.Run(async () =>
-                                        {
-                                            try
-                                            {
-                                                await ProcessCallHandler(request).ConfigureAwait(false);
-                                            }
-                                            catch (Exception _)
-                                            {
-                                                if (_ is ObjectDisposedException or InvalidOperationException)
-                                                    throw;
-                                            }
-                                        });
+                                        DispatchRequest(request);
                                         break;
                                 }
                             }
@@ -1122,6 +1368,20 @@ namespace SharedMemory
                 }
             }
         }
+
+        // Separate method: capturing `request` inline allocated a closure per packet read, even for stream items.
+        void DispatchRequest(RpcRequest request) => _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ProcessCallHandler(request).ConfigureAwait(false);
+            }
+            catch (Exception _)
+            {
+                if (_ is ObjectDisposedException or InvalidOperationException)
+                    throw;
+            }
+        });
 
         private int _processCount = 0;
         private object _processLock = new object();
