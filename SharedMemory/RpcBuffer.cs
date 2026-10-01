@@ -26,6 +26,7 @@ namespace SharedMemory
     // Only supported in .NET 4.5+ and .NET Standard 2.0
 
     using System.Collections.Concurrent;
+    using System.Collections.Generic;
     using System.Runtime.InteropServices;
     using System.Threading;
     using System.Threading.Tasks;
@@ -176,6 +177,10 @@ namespace SharedMemory
         /// An item of a stream; <c>ResponseId</c> is the MsgId of the request that opened it
         /// </summary>
         StreamItem = 4,
+        /// <summary>
+        /// Multi-client only: the client leaves; the host releases its response ring
+        /// </summary>
+        Close = 5,
     }
 
     /// <summary>
@@ -597,6 +602,125 @@ namespace SharedMemory
         Func<ulong, byte[], byte[]>? RemoteCallHandlerWithResult = null;
         Func<ulong, byte[], Task<byte[]>>? AsyncRemoteCallHandlerWithResult = null;
 
+        // Multi-client: one request ring "{name}_Host" (created by the host, written by every client) and one response
+        // ring "{name}_c{id}" per client (created by the client). The client id lives in the high bits of every MsgId
+        // it issues, so the host routes responses/stream items without any extra header bytes.
+        // ponytail: 24-bit client id / 40-bit per-client counter; a client sending >2^40 messages would spill into the id.
+        const int ClientShift = 40;
+        const string HostSuffix = "_Host";
+        readonly string? _hostName;
+        readonly Dictionary<int, CircularBuffer>? _clients; // host only, guarded by lock_sendQ
+        readonly ulong _clientBits; // client only: id << ClientShift
+        int _closeSent;
+
+        static string ClientRing(string name, int id) => name + "_c" + id;
+
+        /// <summary>
+        /// Creates a multi-client host: a single reader thread serves every <see cref="Connect"/>ed client.
+        /// </summary>
+        public static RpcBuffer Host(string name, Func<ulong, byte[], byte[]> handler, int bufferCapacity = 50000, int bufferNodeCount = 10)
+            => new(name, handler, bufferCapacity, bufferNodeCount);
+
+        /// <inheritdoc cref="Host(string, Func{ulong, byte[], byte[]}, int, int)"/>
+        public static RpcBuffer Host(string name, Func<ulong, byte[], Task<byte[]>> handler, int bufferCapacity = 50000, int bufferNodeCount = 10)
+            => new(name, handler, bufferCapacity, bufferNodeCount);
+
+        /// <summary>
+        /// Connects to a <see cref="Host(string, Func{ulong, byte[], byte[]}, int, int)"/>. Throws <see cref="System.IO.FileNotFoundException"/> if no host exists.
+        /// Disposing the client tells the host to release it.
+        /// </summary>
+        public static RpcBuffer Connect(string name) => new(name, null, 0, 0);
+
+#pragma warning disable CS8618
+        private RpcBuffer(string name, Delegate? hostHandler, int bufferCapacity, int bufferNodeCount)
+#pragma warning restore CS8618
+        {
+            Statistics = new RpcStatistics();
+            protocolVersion = RpcProtocol.V1;
+            protocolLength = FastStructure<RpcProtocolHeaderV1>.Size;
+            Statistics.ProtocolOverheadPerPacket = protocolLength;
+
+            if (hostHandler is not null)
+            {
+                if (bufferCapacity is < 256 or > 1024 * 1024) throw new ArgumentOutOfRangeException(nameof(bufferCapacity), "must be between 256 bytes and 1MB");
+
+                instanceType = InstanceType.Master;
+                _hostName = name;
+                _clients = [];
+                RemoteCallHandlerWithResult = hostHandler as Func<ulong, byte[], byte[]>;
+                AsyncRemoteCallHandlerWithResult = hostHandler as Func<ulong, byte[], Task<byte[]>>;
+                ReadBuffer = new CircularBuffer(name + HostSuffix, bufferNodeCount, bufferCapacity);
+                WriteBuffer = null!;
+            }
+            else
+            {
+                instanceType = InstanceType.Slave;
+                WriteBuffer = new CircularBuffer(name + HostSuffix);
+                try
+                {
+                    int id = WriteBuffer.NextSequence();
+                    _clientBits = (ulong)id << ClientShift;
+                    ReadBuffer = new CircularBuffer(ClientRing(name, id), WriteBuffer.NodeCount, WriteBuffer.NodeBufferSize);
+                }
+                catch
+                {
+                    WriteBuffer.Dispose();
+                    throw;
+                }
+            }
+
+            this.bufferCapacity = ReadBuffer.NodeBufferSize;
+            this.bufferNodeCount = ReadBuffer.NodeCount;
+            msgBufferLength = this.bufferCapacity - protocolLength;
+
+            StartReader();
+        }
+
+        /// <summary>Ring the next write goes to: the peer's for pairs and clients, the addressed client's for a host. Call under lock_sendQ.</summary>
+        CircularBuffer? Target(ulong responseId)
+        {
+            if (_clients is null) return WriteBuffer;
+
+            int id = (int)(responseId >> ClientShift);
+            if (!_clients.TryGetValue(id, out var ring))
+            {
+                try { _clients[id] = ring = new CircularBuffer(ClientRing(_hostName!, id)); }
+                catch (System.IO.IOException) { return null; } // client already gone (or a host-initiated request: no target)
+            }
+
+            if (!ring.ShuttingDown) return ring;
+
+            DropClient(id);
+            return null;
+        }
+
+        void DropClient(int id)
+        {
+            if (_clients!.Remove(id, out var ring)) ring.Dispose();
+        }
+
+        void SendClose()
+        {
+            if (_clientBits == 0 || Interlocked.Exchange(ref _closeSent, 1) == 1) return;
+
+            try { WriteProtocolV1(MessageType.Close, NextMsgId(), ReadOnlyMemory<byte>.Empty, 0, 100); }
+            catch { } // best effort: a dead host has nothing to release
+        }
+
+        void StartReader()
+        {
+            // Hilo dedicado: el bucle lector bloquea; en el pool sufre inanicion con llamadas sync concurrentes.
+            _ = Task.Factory.StartNew(() =>
+            {
+                switch (protocolVersion)
+                {
+                    case RpcProtocol.V1:
+                        ReadThreadV1();
+                        break;
+                }
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        }
+
         /// <summary>
         /// Construct a new RpcBuffer
         /// </summary>
@@ -719,16 +843,7 @@ namespace SharedMemory
 
             msgBufferLength = Convert.ToInt32(this.bufferCapacity) - protocolLength;
 
-            // Hilo dedicado: el bucle lector bloquea; en el pool sufre inanicion con llamadas sync concurrentes.
-            _ = Task.Factory.StartNew(() =>
-            {
-                switch (protocolVersion)
-                {
-                    case RpcProtocol.V1:
-                        ReadThreadV1();
-                        break;
-                }
-            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            StartReader();
         }
 
         private readonly object mutex = new ();
@@ -740,11 +855,12 @@ namespace SharedMemory
         /// <returns></returns>
         protected RpcRequest CreateMessageRequest()
         {
-            RpcRequest request = new ();
+            return new RpcRequest { MsgId = NextMsgId() };
+        }
 
-            lock (mutex)  request.MsgId = messageId++;
-
-            return request;
+        ulong NextMsgId()
+        {
+            lock (mutex) return _clientBits | messageId++;
         }
 
         /// <summary>
@@ -866,8 +982,7 @@ namespace SharedMemory
         {
             ThrowIfDisposedOrShutdown();
 
-            ulong msgId;
-            lock (mutex) msgId = messageId++;
+            ulong msgId = NextMsgId();
 
             if (!WriteProtocolV1(MessageType.StreamItem, msgId, requestMsgId, state, write, out int size)) return false;
 
@@ -944,16 +1059,14 @@ namespace SharedMemory
                 return false;
             }
 
-            if (WriteBuffer.ShuttingDown)
-            {
-                return false;
-            }
-
             var msg = msgMem.Span;
 
             // Send the request packets
             lock (lock_sendQ)
             {
+                var target = Target(responseMsgId);
+                if (target is null || target.ShuttingDown) return false;
+
                 // Split message into correct packet size
                 int i = 0;
                 int left = msg.Length;
@@ -965,7 +1078,7 @@ namespace SharedMemory
 
                 while (true)
                 {
-                    if (WriteBuffer.ShuttingDown)
+                    if (target.ShuttingDown)
                     {
                         return false;
                     }
@@ -1006,7 +1119,7 @@ namespace SharedMemory
                     }
 
                     Statistics.StartWaitWrite();
-                    var bytes = WriteBuffer.Write((ptr) =>
+                    var bytes = target.Write((ptr) =>
                     {
                         ptr.WriteBytes(pMsg, 0, pMsg.Length);
                         return pMsg.Length;
@@ -1080,16 +1193,19 @@ namespace SharedMemory
         {
             size = 0;
 
-            if (Disposed || WriteBuffer.ShuttingDown) return false;
+            if (Disposed) return false;
 
             lock (lock_sendQ)
             {
+                var target = Target(responseId);
+                if (target is null || target.ShuttingDown) return false;
+
                 var w = _nodeWriter ??= new NodeWriter();
                 int hdr = protocolLength, chunk = msgBufferLength;
 
                 Statistics.StartWaitWrite();
                 var ctx = new FirstPacket<TState>(w, hdr, chunk, msgType, msgId, responseId, state, write);
-                var bytes = WriteBuffer.Write(ref ctx, static (IntPtr ptr, ref FirstPacket<TState> c) =>
+                var bytes = target.Write(ref ctx, static (IntPtr ptr, ref FirstPacket<TState> c) =>
                 {
                     byte* p = (byte*)ptr;
                     var w = c.Writer;
@@ -1132,12 +1248,12 @@ namespace SharedMemory
 
                 if (!w.Spilled || total_size <= chunk) return true;
 
-                return WriteRemainingPackets(msgType, msgId, responseId, w, hdr, chunk, total_size);
+                return WriteRemainingPackets(target, msgType, msgId, responseId, w, hdr, chunk, total_size);
             }
         }
 
         // Separate method: its closure would otherwise be allocated on every WriteProtocolV1 call.
-        unsafe bool WriteRemainingPackets(MessageType msgType, ulong msgId, ulong responseId, NodeWriter w, int hdr, int chunk, int total_size)
+        unsafe bool WriteRemainingPackets(CircularBuffer target, MessageType msgType, ulong msgId, ulong responseId, NodeWriter w, int hdr, int chunk, int total_size)
         {
             {
                 int bytes;
@@ -1146,12 +1262,12 @@ namespace SharedMemory
                 ushort total = checked((ushort)((total_size + chunk - 1) / chunk));
                 for (ushort packet = 2; packet <= total; packet++)
                 {
-                    if (WriteBuffer.ShuttingDown) return false;
+                    if (target.ShuttingDown) return false;
 
                     int offset = (packet - 1) * chunk, len = Math.Min(chunk, total_size - offset);
                     ushort current = packet;
 
-                    bytes = WriteBuffer.Write(ptr =>
+                    bytes = target.Write(ptr =>
                     {
                         byte* p = (byte*)ptr;
                         WriteHeader(p, new RpcProtocolHeaderV1 { MsgType = msgType, MsgId = msgId, ResponseId = responseId, CurrentPacket = current, TotalPackets = total, PayloadSize = total_size });
@@ -1298,6 +1414,9 @@ namespace SharedMemory
                                         unsafe { streamOwner.OnStreamItem?.Invoke(new ReadOnlySpan<byte>((void*)ptr, size)); }
                                         return protocolLength + size;
                                     }
+                                case MessageType.Close when _clients is not null:
+                                    lock (lock_sendQ) DropClient((int)(header.MsgId >> ClientShift));
+                                    return protocolLength;
                                 default:
                                     request = IncomingRequests.GetOrAdd(header.MsgId, static id => new RpcRequest { MsgId = id });
                                     break;
@@ -1464,7 +1583,7 @@ namespace SharedMemory
                 throw new ObjectDisposedException("RpcBuffer");
             }
 
-            if (ReadBuffer.ShuttingDown || WriteBuffer.ShuttingDown)
+            if (ReadBuffer.ShuttingDown || WriteBuffer is { ShuttingDown: true })
             {
                 throw new InvalidOperationException("Channel owner has closed buffers");
             }
@@ -1491,6 +1610,7 @@ namespace SharedMemory
 
             if (disposeManagedResources)
             {
+                SendClose();
                 DisposeManagedResources();
             }
         }
@@ -1538,6 +1658,15 @@ namespace SharedMemory
             {
                 WriteBuffer.Dispose();
                 WriteBuffer = null!;
+            }
+
+            if (_clients != null)
+            {
+                lock (lock_sendQ)
+                {
+                    foreach (var ring in _clients.Values) ring.Dispose();
+                    _clients.Clear();
+                }
             }
 
             if (ReadBuffer != null)

@@ -70,6 +70,12 @@ namespace SharedMemory
         /// </summary>
         public bool IsOwnerOfSharedMemory { get; private set; }
         
+        /// <summary>Atomically increments the shared <see cref="SharedHeader.Sequence"/> and returns the new value.</summary>
+        internal int NextSequence() => Interlocked.Increment(ref Header->Sequence);
+
+        /// <summary>Raises the shutdown flag without unmapping (safe while another thread is still reading).</summary>
+        internal void MarkShutdown() => Interlocked.Exchange(ref Header->Shutdown, 1);
+
         /// <summary>
         /// Returns true if the SharedMemory owner has/is shutting down
         /// </summary>

@@ -46,8 +46,8 @@ namespace SharedMemory
         public volatile int Shutdown;
 
         /// <summary>
-        /// Pad to 16-bytes.
+        /// Shared counter (pads the header to 16 bytes). <see cref="RpcBuffer"/> hosts use it to hand out client ids.
         /// </summary>
-        int _padding0;
+        public int Sequence;
     }
 }

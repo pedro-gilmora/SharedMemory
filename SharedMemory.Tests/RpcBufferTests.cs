@@ -555,5 +555,28 @@ namespace SharedMemory.Tests
                 }
             }
         }
+
+        [TestMethod]
+        public void MultiClient_ConcurrentClients_RoutedAndIsolated()
+        {
+            using var host = RpcBuffer.Host(ipcName, (msgId, payload) => payload.Reverse().ToArray(), bufferCapacity: 256);
+            using var a = RpcBuffer.Connect(ipcName);
+            var b = RpcBuffer.Connect(ipcName);
+
+            var big = Enumerable.Range(0, 1000).Select(i => (byte)i).ToArray(); // > one 256-byte node: multi-packet
+            var calls = Enumerable.Range(0, 50).Select(i => (i % 2 == 0 ? a : b).RemoteRequestAsync(i == 0 ? big : [(byte)i, 0])).ToArray();
+            Task.WaitAll(calls);
+
+            CollectionAssert.AreEqual(big.Reverse().ToArray(), calls[0].Result.Data);
+            for (int i = 1; i < calls.Length; i++)
+                CollectionAssert.AreEqual(new byte[] { 0, (byte)i }, calls[i].Result.Data);
+
+            b.Dispose();
+            Task.Delay(100).Wait();
+
+            var after = a.RemoteRequest([1, 2], 1000);
+            Assert.IsTrue(after.Success);
+            CollectionAssert.AreEqual(new byte[] { 2, 1 }, after.Data);
+        }
     }
 }
