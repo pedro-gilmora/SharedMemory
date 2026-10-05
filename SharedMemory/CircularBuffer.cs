@@ -608,6 +608,8 @@ namespace SharedMemory
             return Marshal.PtrToStructure<NodeHeader>(new IntPtr(_nodeHeader));
         }
 
+        static readonly long SpinBudgetTicks = System.Diagnostics.Stopwatch.Frequency * 30 / 1_000_000;
+
         /// <summary>
         /// Attempts to reserve a node from the linked-list for reading with the specified timeout
         /// </summary>
@@ -616,19 +618,23 @@ namespace SharedMemory
         protected virtual Node* GetNodeForReading(int timeout)
         {
             var spin = new SpinWait();
+            long spinUntil = 0;
             for (; ; )
             {
                 int blockIndex = _nodeHeader->ReadStart;
                 Node* node = this[blockIndex];
                 if (blockIndex == _nodeHeader->WriteEnd)
                 {
-                    // ponytail: spin briefly before the kernel wait; streams post nodes back to back and a wake-up costs more than a few spins.
-                    if (!spin.NextSpinWillYield) { spin.SpinOnce(-1); continue; }
+                    // ponytail: spin up to SpinBudgetTicks (~30 us) before the kernel wait; an RPC reply usually lands within it
+                    // and a wake-up costs more. Burns that much CPU per idle wait; tune the budget if idle CPU matters.
+                    if (spinUntil == 0) spinUntil = System.Diagnostics.Stopwatch.GetTimestamp() + SpinBudgetTicks;
+                    if (System.Diagnostics.Stopwatch.GetTimestamp() < spinUntil) { spin.SpinOnce(-1); continue; }
 
                     // No data is available, wait for it
                     if (DataExists.WaitOne(timeout))
                     {
                         spin.Reset();
+                        spinUntil = 0;
                         continue;
                     }
 
