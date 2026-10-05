@@ -68,7 +68,8 @@ namespace SharedMemory
         {
             if (task.IsCompleted) return task;
             if (millisecondsTimeout == 0) return CancelledRpcResponseTask;
-            if (millisecondsTimeout == Timeout.Infinite && !cancellationToken.CanBeCanceled) return task;
+            // Infinite (streams): cancellation throws, so callers can tell a cancelled stream from a failed one.
+            if (millisecondsTimeout == Timeout.Infinite) return task.WaitAsync(cancellationToken);
 
             return Await(task, millisecondsTimeout, cancellationToken);
 
