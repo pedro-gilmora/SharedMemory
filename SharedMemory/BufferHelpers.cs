@@ -12,13 +12,9 @@ namespace SharedMemory
     public class BufferReader(byte[] buffer, Encoding? encoding = null)
     {
         protected ReadOnlyMemory<byte> _buffer = MemoryExtensions.AsMemory(buffer);
-        Decoder? _decoder;
-        char[]? _charBuffer = null;
-        private const int MaxCharBytesSize = 128;
         int _pos = 0;
         readonly Encoding _encoding = encoding ?? Encoding.UTF8;
         readonly int _bufferLen = buffer.Length;
-        readonly int _maxCharsSize = (encoding ?? Encoding.UTF8).GetMaxCharCount(MaxCharBytesSize);
 
         public bool ReadBoolean() => ReadByte() != 0;
 
@@ -54,71 +50,19 @@ namespace SharedMemory
 
         public Guid ReadGuid() => MemoryMarshal.Read<Guid>(_buffer.Span[_pos..(_pos += 16)]);
 
-        public unsafe string ReadString()
+        public string ReadString()
         {
             // Length of the string in bytes, not chars
             int stringLength = Read7BitEncodedInt();
 
             if (stringLength < 0) throw new IOException("Invalid string length", stringLength);
 
-            if (stringLength == 0) return string.Empty;
+            if (stringLength > _bufferLen - _pos) throw new IOException("End of buffer");
 
-            ReadOnlySpan<byte> charBytes = stackalloc byte[MaxCharBytesSize];
-
-            int currPos = 0;
-
-            StringBuilder? sb = null;
-            do
-            {
-                int readLength = Math.Min(MaxCharBytesSize, stringLength - currPos);
-                int n;
-                // Read(Span<byte>) inlined
-                {
-                    var slice = new Span<byte>((byte*)Unsafe.AsPointer(ref MemoryMarshal.GetReference(charBytes)), readLength);
-                    n = Math.Min(_bufferLen - _pos, slice.Length);
-                    if (n <= 0)
-                        n = 0;
-
-                    _buffer.Span.Slice(_pos, n).CopyTo(slice);
-
-                    _pos += n;
-                }
-
-                if (n == 0)
-                {
-                    throw new IOException("End of buffer");
-                }
-
-                if (currPos == 0 && n == stringLength)
-                {
-                    _encoding.GetString((byte*)Unsafe.AsPointer(ref MemoryMarshal.GetReference(charBytes)), n);
-                }
-
-                _decoder ??= _encoding.GetDecoder();
-                _charBuffer ??= new char[_maxCharsSize];
-
-                int charsRead = GetChars(_decoder, charBytes[..n], _charBuffer, flush: false);
-
-                // Since we could be reading from an untrusted data source, limit the initial size of the
-                // StringBuilder instance we're about to get or create. It'll expand automatically as needed.
-
-                sb ??= StringBuilderCache.Acquire(Math.Min(stringLength, StringBuilderCache.MaxBuilderSize)); // Actual string length in chars may be smaller.
-                sb.Append(_charBuffer, 0, charsRead);
-                currPos += n;
-            } while (currPos < stringLength);
-
-            return StringBuilderCache.GetStringAndRelease(sb);
-        }
-
-        static unsafe int GetChars(Decoder decoder, ReadOnlySpan<byte> bytes, Span<char> chars, bool flush)
-        {
-            fixed (byte* nonNullPinnableReference = &bytes.GetNonNullPinnableReference())
-            {
-                fixed (char* nonNullPinnableReference2 = &chars.GetNonNullPinnableReference())
-                {
-                    return decoder.GetChars(nonNullPinnableReference, bytes.Length, nonNullPinnableReference2, chars.Length, flush);
-                }
-            }
+            // The whole payload is already in memory: decode in one shot, no Decoder/char[]/StringBuilder.
+            string value = _encoding.GetString(_buffer.Span.Slice(_pos, stringLength));
+            _pos += stringLength;
+            return value;
         }
 
         public bool? TryReadBoolean() => ReadBoolean() ? ReadBoolean() : null;
@@ -210,57 +154,6 @@ namespace SharedMemory
             return _buffer.Span[_pos..];
         }
         public void Reset() => _pos = 0;
-        static class StringBuilderCache
-        {
-            // The value 360 was chosen in discussion with performance experts as a compromise between using
-            // as little memory per thread as possible and still covering a large part of short-lived
-            // StringBuilder creations on the startup path of VS designers.
-            internal const int MaxBuilderSize = 360;
-            private const int DefaultCapacity = 16; // == StringBuilder.DefaultCapacity
-
-            [ThreadStatic]
-            private static StringBuilder? t_cachedInstance;
-
-            /// <summary>Get a StringBuilder for the specified capacity.</summary>
-            /// <remarks>If a StringBuilder of an appropriate size is cached, it will be returned and the cache emptied.</remarks>
-            public static StringBuilder Acquire(int capacity = DefaultCapacity)
-            {
-                if (capacity <= MaxBuilderSize)
-                {
-                    StringBuilder? sb = t_cachedInstance;
-                    if (sb != null)
-                    {
-                        // Avoid stringbuilder block fragmentation by getting a new StringBuilder
-                        // when the requested size is larger than the current capacity
-                        if (capacity <= sb.Capacity)
-                        {
-                            t_cachedInstance = null;
-                            sb.Clear();
-                            return sb;
-                        }
-                    }
-                }
-
-                return new StringBuilder(capacity);
-            }
-
-            /// <summary>Place the specified builder in the cache if it is not too big.</summary>
-            public static void Release(StringBuilder sb)
-            {
-                if (sb.Capacity <= MaxBuilderSize)
-                {
-                    t_cachedInstance = sb;
-                }
-            }
-
-            /// <summary>ToString() the stringbuilder, Release it to the cache, and return the resulting string.</summary>
-            public static string GetStringAndRelease(StringBuilder sb)
-            {
-                string result = sb.ToString();
-                Release(sb);
-                return result;
-            }
-        }
     }
 
     public sealed class BufferBuilder() : IBufferWriter<byte>
