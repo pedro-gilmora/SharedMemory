@@ -377,6 +377,7 @@ namespace SharedMemory
         /// <returns>An unsafe pointer to the node if successful, otherwise null</returns>
         protected virtual Node* GetNodeForWriting(int timeout)
         {
+            bool waited = false;
             for (; ; )
             {
                 int blockIndex = _nodeHeader->WriteStart;
@@ -385,7 +386,10 @@ namespace SharedMemory
                 {
                     // No room is available, wait for room to become available
                     if (NodeAvailable.WaitOne(timeout))
+                    {
+                        waited = true;
                         continue;
+                    }
 
                     // Timeout
                     return null;
@@ -393,7 +397,13 @@ namespace SharedMemory
 
 #pragma warning disable 0420 // ignore ref to volatile warning - Interlocked API
                 if (Interlocked.CompareExchange(ref _nodeHeader->WriteStart, node->Next, blockIndex) == blockIndex)
+                {
+                    // AutoReset wakes a single writer and ReturnNode only signals on the full->free edge: pass the
+                    // baton if room is left, or other waiting writers (e.g. other clients of a host) sleep until timeout.
+                    if (waited && this[node->Next]->Next != _nodeHeader->ReadEnd)
+                        NodeAvailable.Set();
                     return node;
+                }
 #pragma warning restore 0420
 
                 // Another thread has already acquired this node for writing, try again.
