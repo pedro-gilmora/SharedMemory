@@ -40,7 +40,12 @@ namespace SharedMemory
     /// <summary>
     /// The available RPC protocols
     /// </summary>
-    public enum RpcProtocol
+#if SG_CONTEXT
+    internal
+#else
+    public
+#endif
+    enum RpcProtocol
     {
         /// <summary>
         /// Version 1 - messages are split into packets that fit the buffer capacity and include a protocol header in each packet
@@ -52,7 +57,12 @@ namespace SharedMemory
     /// Extension methods for adorning RPC tasks
     /// </summary>
 
-    public static class ResponseTaskHelper
+    #if SG_CONTEXT
+        internal
+    #else
+        public
+    #endif
+        static class ResponseTaskHelper
     {
         static readonly RpcResponse CancelledRpcResponse = new RpcResponse(false, null);
         static readonly Task<RpcResponse> CancelledRpcResponseTask = Task.FromResult(CancelledRpcResponse);
@@ -135,7 +145,12 @@ namespace SharedMemory
     /// <summary>
     /// The RPC message type
     /// </summary>
-    public enum MessageType : byte
+    #if SG_CONTEXT
+        internal
+    #else
+        public
+    #endif
+        enum MessageType : byte
     {
         /// <summary>
         /// A request message
@@ -162,7 +177,12 @@ namespace SharedMemory
     /// <summary>
     /// The V1 protocol header
     /// </summary>
-    public record struct RpcProtocolHeaderV1
+    #if SG_CONTEXT
+        internal
+    #else
+        public
+    #endif
+        record struct RpcProtocolHeaderV1
     {
         /// <summary>
         /// Message Type
@@ -193,7 +213,12 @@ namespace SharedMemory
     /// <summary>
     /// Represents a request to be sent on the channel
     /// </summary>
-    public class RpcRequest
+    #if SG_CONTEXT
+    internal
+#else
+    public
+#endif
+    class RpcRequest
     {
         internal RpcRequest() { }
         /// <summary>
@@ -209,9 +234,17 @@ namespace SharedMemory
         /// </summary>
         public byte[] Data { get; set; } = null!;
         /// <summary>
+        /// <see cref="Data"/> is rented from <see cref="System.Buffers.ArrayPool{T}.Shared"/> and may be longer than <see cref="Length"/>
+        /// </summary>
+        internal bool Pooled;
+        internal int Length;
+        /// <summary>
         /// A wait event that is signaled when a response is ready
         /// </summary>
-        public TaskCompletionSource<RpcResponse> ResponseReady { get; } = new TaskCompletionSource<RpcResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Lazy: incoming requests and direct calls (PendingCall) never need it.
+        public TaskCompletionSource<RpcResponse> ResponseReady =>
+            _responseReady ?? Interlocked.CompareExchange(ref _responseReady, new TaskCompletionSource<RpcResponse>(TaskCreationOptions.RunContinuationsAsynchronously), null) ?? _responseReady;
+        TaskCompletionSource<RpcResponse>? _responseReady;
         /// <summary>
         /// Receives the stream items addressed to this request (invoked on the reader thread, in order)
         /// </summary>
@@ -237,9 +270,77 @@ namespace SharedMemory
     /// <summary>
     /// Receives a stream item; the span is only valid during the call (it may point into shared memory).
     /// </summary>
-    public delegate void StreamItemHandler(ReadOnlySpan<byte> item);
+    #if SG_CONTEXT
+    internal
+#else
+    public
+#endif
+    delegate void StreamItemHandler(ReadOnlySpan<byte> item);
 
-    public class RpcResponse(bool success, byte[]? data)
+    /// <summary>
+    /// Reads the final response; the span is only valid during the call (it may point into shared memory).
+    /// Invoked on the reader thread: keep it to parsing/deserialization.
+    /// </summary>
+#if SG_CONTEXT
+    internal
+#else
+    public
+#endif
+    delegate TOut ResponseReader<TState, TOut>(TState state, ReadOnlySpan<byte> response);
+
+    /// <summary>
+    /// Direct host handler: <paramref name="request"/> is pooled and only valid until the handler returns.
+    /// The handler replies itself with <see cref="RpcBuffer.Reply{TState}"/>.
+    /// </summary>
+#if SG_CONTEXT
+    internal
+#else
+    public
+#endif
+    delegate void RpcRequestHandler(ulong msgId, ReadOnlyMemory<byte> request);
+
+    /// <summary>
+    /// Async direct host handler: <paramref name="request"/> is pooled and only valid until the returned task completes.
+    /// The handler replies itself with <see cref="RpcBuffer.Reply{TState}"/>.
+    /// </summary>
+#if SG_CONTEXT
+    internal
+#else
+    public
+#endif
+    delegate Task RpcAsyncRequestHandler(ulong msgId, ReadOnlyMemory<byte> request);
+
+    /// <summary>Outgoing request whose response is read straight from the node (no <see cref="RpcResponse"/>/array).</summary>
+    abstract class PendingCall : RpcRequest
+    {
+        internal abstract void Complete(bool success, ReadOnlySpan<byte> response);
+    }
+
+    sealed class PendingCall<TState, TOut>(TState state, ResponseReader<TState, TOut> read) : PendingCall
+    {
+        readonly TaskCompletionSource<TOut> _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<TOut> Task => _done.Task;
+
+        internal override void Complete(bool success, ReadOnlySpan<byte> response)
+        {
+            if (!success)
+            {
+                _done.TrySetException(new InvalidOperationException("Remote request handler failed."));
+                return;
+            }
+
+            try { _done.TrySetResult(read(state, response)); }
+            catch (Exception ex) { _done.TrySetException(ex); }
+        }
+    }
+
+#if SG_CONTEXT
+    internal
+#else
+    public
+#endif
+    class RpcResponse(bool success, byte[]? data)
     {
 
         /// <summary>
@@ -256,7 +357,12 @@ namespace SharedMemory
     /// <summary>
     /// Represents the channel statistics of an <see cref="RpcBuffer"/> instance
     /// </summary>
-    public class RpcStatistics
+    #if SG_CONTEXT
+    internal
+#else
+    public
+#endif
+    class RpcStatistics
     {
         /// <summary>
         /// The protocol overhead per packet
@@ -577,6 +683,8 @@ namespace SharedMemory
         Func<ulong, byte[], Task>? AsyncRemoteCallHandler = null;
         Func<ulong, byte[], byte[]>? RemoteCallHandlerWithResult = null;
         Func<ulong, byte[], Task<byte[]>>? AsyncRemoteCallHandlerWithResult = null;
+        RpcRequestHandler? RequestHandler = null;
+        RpcAsyncRequestHandler? AsyncRequestHandler = null;
 
         // Multi-client: one request ring "{name}_Host" (created by the host, written by every client) and one response
         // ring "{name}_c{id}" per client (created by the client). The client id lives in the high bits of every MsgId
@@ -599,6 +707,17 @@ namespace SharedMemory
 
         /// <inheritdoc cref="Host(string, Func{ulong, byte[], byte[]}, int, int)"/>
         public static RpcBuffer Host(string name, Func<ulong, byte[], Task<byte[]>> handler, int bufferCapacity = 50000, int bufferNodeCount = 10)
+            => new(name, handler, bufferCapacity, bufferNodeCount);
+
+        /// <summary>
+        /// Multi-client host with a direct handler: the request is pooled (no per-request array) and the handler replies
+        /// itself with <see cref="Reply{TState}"/>, writing straight into the client's node. A throwing handler yields <see cref="MessageType.ErrorInRpc"/>.
+        /// </summary>
+        public static RpcBuffer Host(string name, RpcRequestHandler handler, int bufferCapacity = 50000, int bufferNodeCount = 10)
+            => new(name, handler, bufferCapacity, bufferNodeCount);
+
+        /// <inheritdoc cref="Host(string, RpcRequestHandler, int, int)"/>
+        public static RpcBuffer Host(string name, RpcAsyncRequestHandler handler, int bufferCapacity = 50000, int bufferNodeCount = 10)
             => new(name, handler, bufferCapacity, bufferNodeCount);
 
         /// <summary>
@@ -625,6 +744,8 @@ namespace SharedMemory
                 _clients = [];
                 RemoteCallHandlerWithResult = hostHandler as Func<ulong, byte[], byte[]>;
                 AsyncRemoteCallHandlerWithResult = hostHandler as Func<ulong, byte[], Task<byte[]>>;
+                RequestHandler = hostHandler as RpcRequestHandler;
+                AsyncRequestHandler = hostHandler as RpcAsyncRequestHandler;
                 ReadBuffer = new CircularBuffer(name + HostSuffix, bufferNodeCount, bufferCapacity);
                 WriteBuffer = null!;
             }
@@ -1165,6 +1286,76 @@ namespace SharedMemory
 
         NodeWriter? _nodeWriter;
 
+        /// <summary>
+        /// Replies to the incoming request <paramref name="requestMsgId"/> (direct handlers): <paramref name="write"/> writes the
+        /// response straight into the client's node. Returns false if the client is gone.
+        /// </summary>
+        public bool Reply<TState>(ulong requestMsgId, TState state, Action<System.Buffers.IBufferWriter<byte>, TState> write)
+        {
+            if (!WriteProtocolV1(MessageType.RpcResponse, NextMsgId(), requestMsgId, state, write, out int size)) return false;
+
+            Statistics.MessageSent(MessageType.RpcResponse, size);
+            return true;
+        }
+
+        /// <summary>
+        /// Sends a request written by <paramref name="write"/> straight into the node and parses the response with
+        /// <paramref name="read"/> straight from the node (reader thread): no <see cref="RpcResponse"/> nor response array.
+        /// Faults with <see cref="TimeoutException"/>, <see cref="OperationCanceledException"/> or the reader's exception.
+        /// </summary>
+        public Task<TOut> Call<TState, TReadState, TOut>(TState state, Action<System.Buffers.IBufferWriter<byte>, TState> write, TReadState readState, ResponseReader<TReadState, TOut> read, int timeoutMs = defaultTimeoutMs, CancellationToken cancellationToken = default)
+            => CallCore(state, write, null, readState, read, timeoutMs, cancellationToken);
+
+        /// <summary>
+        /// Like <see cref="Call{TState, TReadState, TOut}"/> for a streaming handler: items reach <paramref name="onItem"/> in order
+        /// on the reader thread, the final response completes the task. No timeout: cancel with <paramref name="cancellationToken"/>.
+        /// </summary>
+        public Task<TOut> CallStream<TState, TReadState, TOut>(TState state, Action<System.Buffers.IBufferWriter<byte>, TState> write, StreamItemHandler onItem, TReadState readState, ResponseReader<TReadState, TOut> read, CancellationToken cancellationToken = default)
+            => CallCore(state, write, onItem, readState, read, Timeout.Infinite, cancellationToken);
+
+        Task<TOut> CallCore<TState, TReadState, TOut>(TState state, Action<System.Buffers.IBufferWriter<byte>, TState> write, StreamItemHandler? onItem, TReadState readState, ResponseReader<TReadState, TOut> read, int timeoutMs, CancellationToken cancellationToken)
+        {
+            ThrowIfDisposedOrShutdown();
+
+            var call = new PendingCall<TReadState, TOut>(readState, read) { MsgId = NextMsgId(), OnStreamItem = onItem, Pooled = true };
+            Requests[call.MsgId] = call;
+
+            bool success;
+            int size;
+            try
+            {
+                success = WriteProtocolV1(MessageType.RpcRequest, call.MsgId, 0, state, write, out size);
+            }
+            catch
+            {
+                Requests.TryRemove(call.MsgId, out _);
+                throw;
+            }
+
+            if (!success)
+            {
+                Requests.TryRemove(call.MsgId, out _);
+                return Task.FromException<TOut>(new System.IO.IOException("Channel closed: the request was not sent."));
+            }
+
+            Statistics.MessageSent(MessageType.RpcRequest, size);
+
+            return AwaitCall(call, timeoutMs, cancellationToken);
+        }
+
+        async Task<TOut> AwaitCall<TReadState, TOut>(PendingCall<TReadState, TOut> call, int timeoutMs, CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await call.Task.WaitAsync(timeoutMs == Timeout.Infinite ? Timeout.InfiniteTimeSpan : TimeSpan.FromMilliseconds(timeoutMs), cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+            {
+                Requests.TryRemove(call.MsgId, out _); // a late response is discarded by the reader
+                throw;
+            }
+        }
+
         unsafe bool WriteProtocolV1<TState>(MessageType msgType, ulong msgId, ulong responseId, TState state, Action<System.Buffers.IBufferWriter<byte>, TState> write, out int size)
         {
             size = 0;
@@ -1336,11 +1527,8 @@ namespace SharedMemory
                 // Work with Local Variable to prevent NPE after dispose  
                 CircularBuffer l_TempReadBuffer = ReadBuffer;
 
-                while (true && !l_TempReadBuffer.ShuttingDown)
+                while (true)
                 {
-                    if (Interlocked.Read(ref _disposed) == 1)
-                        return;
-
                     // Check If Reading must be stopped
                     if (_needDisposeManagedResources)
                     {
@@ -1348,14 +1536,21 @@ namespace SharedMemory
                         return;
                     }
 
-                    // Set Marker for Reading in Progress
+                    // Claim the reading marker atomically with the disposed check: dispose unmaps the view
+                    // only while the marker is clear, so the buffer must not be touched outside of it
                     lock (m_ReadThreadIsReadingLock)
                     {
+                        if (Interlocked.Read(ref _disposed) != 0)
+                            return;
+
                         m_ReadThreadIsReading = true;
                     }
 
                     try
                     {
+                        if (l_TempReadBuffer.ShuttingDown)
+                            return;
+
                         Statistics.StartWaitRead();
 
                         l_TempReadBuffer.Read(_readPacket ??= ptr =>
@@ -1377,6 +1572,17 @@ namespace SharedMemory
                                         Statistics.DiscardResponse(header.ResponseId);
                                         return protocolLength;
                                     }
+
+                                    if (header.TotalPackets == 1 && request is PendingCall direct)
+                                    {
+                                        // Fast path: the response is parsed straight from the node, no array/RpcResponse
+                                        int len = header.PayloadSize;
+                                        Requests.TryRemove(header.ResponseId, out _);
+                                        Statistics.MessageReceived(header.MsgType, len);
+                                        unsafe { direct.Complete(header.MsgType == MessageType.RpcResponse, new ReadOnlySpan<byte>((void*)ptr, len)); }
+                                        Statistics.ReadPacket(len);
+                                        return protocolLength + len;
+                                    }
                                     break;
                                 case MessageType.StreamItem when !Requests.ContainsKey(header.ResponseId):
                                     // Item of a stream opened by another peer
@@ -1394,7 +1600,11 @@ namespace SharedMemory
                                     lock (lock_sendQ) DropClient((int)(header.MsgId >> ClientShift));
                                     return protocolLength;
                                 default:
-                                    request = IncomingRequests.GetOrAdd(header.MsgId, static id => new RpcRequest { MsgId = id });
+                                    // Direct handlers and stream items only read the payload while processing it: rent it.
+                                    bool pooled = header.MsgType == MessageType.StreamItem || RequestHandler is not null || AsyncRequestHandler is not null;
+                                    request = header.TotalPackets == 1
+                                        ? new RpcRequest { MsgId = header.MsgId, Pooled = pooled }
+                                        : IncomingRequests.GetOrAdd(header.MsgId, static (id, pooled) => new RpcRequest { MsgId = id, Pooled = pooled }, pooled);
                                     break;
                             }
 
@@ -1403,7 +1613,8 @@ namespace SharedMemory
 
                             if (header.PayloadSize > 0)
                             {
-                                request.Data ??= new byte[header.PayloadSize];
+                                request.Data ??= request.Pooled ? System.Buffers.ArrayPool<byte>.Shared.Rent(header.PayloadSize) : new byte[header.PayloadSize];
+                                request.Length = header.PayloadSize;
 
                                 int index = msgBufferLength * (header.CurrentPacket - 1);
                                 request.Data.ReadBytes(ptr, index, packetSize);
@@ -1426,11 +1637,15 @@ namespace SharedMemory
 
                                 // Full message is ready
 
-                                Statistics.MessageReceived(header.MsgType, request.Data?.Length ?? 0);
+                                Statistics.MessageReceived(header.MsgType, request.Length);
 
 
                                 switch (header.MsgType)
                                 {
+                                    case MessageType.RpcResponse or MessageType.ErrorInRpc when request is PendingCall call:
+                                        call.Complete(header.MsgType == MessageType.RpcResponse, request.Data.AsSpan(0, request.Length));
+                                        ReturnPooled(request);
+                                        break;
                                     case MessageType.RpcResponse:
                                         request.IsSuccess = true;
                                         request.ResponseReady.SetResult(new RpcResponse(request.IsSuccess, request.Data));
@@ -1441,7 +1656,8 @@ namespace SharedMemory
                                         break;
                                     case MessageType.StreamItem:
                                         if (Requests.TryGetValue(header.ResponseId, out var owner))
-                                            owner.OnStreamItem?.Invoke(request.Data ?? []);
+                                            owner.OnStreamItem?.Invoke(request.Data.AsSpan(0, request.Length));
+                                        ReturnPooled(request);
                                         break;
                                     case MessageType.RpcRequest:
                                         DispatchRequest(request);
@@ -1476,23 +1692,18 @@ namespace SharedMemory
         // Separate method: capturing `request` inline allocated a closure per packet read, even for stream items.
         // Same pool hop as Task.Run, minus the Task, closure and ExecutionContext capture.
         void DispatchRequest(RpcRequest request) =>
-            ThreadPool.UnsafeQueueUserWorkItem(static s => _ = s.Self.RunCallHandler(s.Request), (Self: this, Request: request), preferLocal: false);
-
-        async Task RunCallHandler(RpcRequest request)
-        {
-            try
-            {
-                await ProcessCallHandler(request).ConfigureAwait(false);
-            }
-            catch (Exception _)
-            {
-                if (_ is ObjectDisposedException or InvalidOperationException)
-                    throw;
-            }
-        }
+            ThreadPool.UnsafeQueueUserWorkItem(static s => _ = s.Self.ProcessCallHandler(s.Request), (Self: this, Request: request), preferLocal: false);
 
         private int _processCount = 0;
         private object _processLock = new object();
+
+        static void ReturnPooled(RpcRequest request)
+        {
+            if (!request.Pooled || request.Data is not { } data) return;
+
+            request.Data = null!;
+            System.Buffers.ArrayPool<byte>.Shared.Return(data);
+        }
 
         // Replies go straight into the node: no RpcRequest/TCS, per-packet array or closure per response.
         void SendReply(MessageType msgType, ulong responseId, byte[]? payload)
@@ -1504,7 +1715,8 @@ namespace SharedMemory
                 Statistics.MessageSent(msgType, size);
         }
 
-        async Task ProcessCallHandler(RpcRequest request, CancellationToken cancellationToken = default)
+        // Fire-and-forget safe: never faults, so callers can just discard the task.
+        async Task ProcessCallHandler(RpcRequest request)
         {
             // Mark as processing
             lock (_processLock)
@@ -1514,7 +1726,15 @@ namespace SharedMemory
 
             try
             {
-                if (RemoteCallHandler != null)
+                if (RequestHandler is { } direct)
+                {
+                    direct(request.MsgId, new ReadOnlyMemory<byte>(request.Data, 0, request.Length));
+                }
+                else if (AsyncRequestHandler is { } directAsync)
+                {
+                    await directAsync(request.MsgId, new ReadOnlyMemory<byte>(request.Data, 0, request.Length)).ConfigureAwait(false);
+                }
+                else if (RemoteCallHandler != null)
                 {
                     RemoteCallHandler(request.MsgId, request.Data);
                     SendReply(MessageType.RpcResponse, request.MsgId, null);
@@ -1537,10 +1757,13 @@ namespace SharedMemory
             }
             catch
             {
-                SendReply(MessageType.ErrorInRpc, request.MsgId, null);
+                try { SendReply(MessageType.ErrorInRpc, request.MsgId, null); }
+                catch { /* disposed/closed channel: nobody left to notify */ }
             }
             finally
             {
+                ReturnPooled(request);
+
                 lock (_processLock)
                 {
                     _processCount--;
@@ -1596,6 +1819,11 @@ namespace SharedMemory
             if (disposeManagedResources)
             {
                 SendClose();
+
+                // The unmap may be deferred while the reader is inside Read: raise the flag now so the peer sees it at once
+                if (ReadBuffer is { IsOwnerOfSharedMemory: true } r) r.MarkShutdown();
+                if (WriteBuffer is { IsOwnerOfSharedMemory: true } w) w.MarkShutdown();
+
                 DisposeManagedResources();
             }
         }
@@ -1627,17 +1855,16 @@ namespace SharedMemory
                     AsyncRemoteCallHandler = null;
                     RemoteCallHandlerWithResult = null;
                     AsyncRemoteCallHandlerWithResult = null;
+                    RequestHandler = null;
+                    AsyncRequestHandler = null;
                     _needDisposeManagedResources = false;
+
+                    // Mark as Disposed under the reader lock: the reader checks it before claiming the buffer.
+                    // Only one Thread processes the dispose
+                    if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+                        return;
                 }
             }
-
-            // Mark as Disposed first otherwise ReadThread has NullPointerException because
-            // ReadBuffer is already null but Disposed is false
-            long l_OldValue = Interlocked.CompareExchange(ref _disposed, 1, 0);
-
-            // Make sure that only one Thread is processing the dispose
-            if (l_OldValue != 0)
-                return;
 
             if (WriteBuffer != null)
             {

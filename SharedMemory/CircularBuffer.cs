@@ -41,7 +41,12 @@ namespace SharedMemory
 #if !NETSTANDARD
         [System.Runtime.Versioning.SupportedOSPlatform("windows")]
 #endif
-    public unsafe class CircularBuffer : SharedBuffer
+    #if SG_CONTEXT
+        internal
+    #else
+        public
+    #endif
+        unsafe class CircularBuffer : SharedBuffer
     {
         #region Public/Protected properties
         

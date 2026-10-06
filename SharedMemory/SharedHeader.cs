@@ -33,7 +33,12 @@ namespace SharedMemory
     /// </summary>
     /// <remarks>This structure is the same size on 32-bit and 64-bit architectures.</remarks>
     [StructLayout(LayoutKind.Sequential)]
-    public struct SharedHeader
+    #if SG_CONTEXT
+        internal
+    #else
+        public
+    #endif
+        struct SharedHeader
     {
         /// <summary>
         /// The total size of the buffer including <see cref="SharedHeader"/>, i.e. <code>BufferSize + Marshal.SizeOf(typeof(SharedMemory.SharedHeader))</code>.

@@ -38,7 +38,12 @@ namespace SharedMemory
     /// <see cref="System.Runtime.InteropServices.Marshal.StructureToPtr(object, IntPtr, bool)"/> (4ms vs 34ms). </para>
     /// </summary>
     /// <typeparam name="T"></typeparam>
-    public static class FastStructure<T>
+    #if SG_CONTEXT
+        internal
+    #else
+        public
+    #endif
+        static class FastStructure<T>
         where T : struct
     {
         /// <summary>

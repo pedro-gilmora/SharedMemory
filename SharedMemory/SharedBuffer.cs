@@ -40,7 +40,12 @@ namespace SharedMemory
     [PermissionSet(SecurityAction.LinkDemand)]
     [PermissionSet(SecurityAction.InheritanceDemand)]
 #endif
-    public abstract unsafe class SharedBuffer : IDisposable
+    #if SG_CONTEXT
+        internal
+    #else
+        public
+    #endif
+        abstract unsafe class SharedBuffer : IDisposable
     {
         #region Public/Protected properties
 
