@@ -40,6 +40,7 @@ struct Frame
 }
 
 /// <summary>A ring that may be written by several threads; unmapped only when its last writer leaves.</summary>
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
 sealed class Peer(CircularBuffer ring)
 {
     public readonly CircularBuffer Ring = ring;
@@ -65,6 +66,7 @@ sealed class Peer(CircularBuffer ring)
     }
 }
 
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
 abstract unsafe class MemEndpoint
 {
     const int WriteTimeoutMs = 1000, ReadTimeoutMs = 1000;
@@ -267,6 +269,7 @@ abstract unsafe class MemEndpoint
     }
 }
 
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
 sealed class MemClient : MemEndpoint, IDisposable
 {
     const int SlotBits = 12, Slots = 1 << SlotBits, Mask = Slots - 1, SweepMs = 100;
@@ -573,6 +576,7 @@ sealed class MemClient : MemEndpoint, IDisposable
 }
 
 /// <summary>Handle of an open stream: completion, credit grants (window mode) and cancellation.</summary>
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
 readonly struct MemStream<TOut>
 {
     readonly MemClient _client;
@@ -600,6 +604,7 @@ readonly struct MemStream<TOut>
 // Reuse is safe only after an end on the reader thread (reply): items of a call are dispatched on that same thread,
 // so none can be in flight. Ends from other threads (cancel, watchdog, dispose) may race a snapshotted Add: dropped.
 // ponytail: unbounded like the Channel it replaces; window credits are the backpressure knob.
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
 sealed class MemPull : IValueTaskSource, IDisposable
 {
     public static readonly MemItemHandler Append = static (s, item) => ((MemPull)s!).Add(item, framed: true);
@@ -731,6 +736,7 @@ sealed class MemPull : IValueTaskSource, IDisposable
 /// through this instance (no async state machine, no Channel). Rented per enumeration, recycled by DisposeAsync.
 /// Ends with the final response (<see cref="Result"/>) or rethrows the stream fault; disposing early cancels the host producer.
 /// </summary>
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
 sealed class MemPullEnumerator<TItem, TEnd> : IAsyncEnumerator<TItem>, IValueTaskSource<bool>
 {
     static readonly Stack<MemPullEnumerator<TItem, TEnd>> s_pool = new();
@@ -882,6 +888,7 @@ sealed class MemPullEnumerator<TItem, TEnd> : IAsyncEnumerator<TItem>, IValueTas
         => _core.OnCompleted(continuation, state, token, flags);
 }
 
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
 abstract class Pending
 {
     public uint Id;
@@ -896,6 +903,7 @@ abstract class Pending
 }
 
 /// <summary>Pooled per TOut; returned to the pool by GetResult unless a cancellation callback may still hold it.</summary>
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
 sealed class Pending<TOut> : Pending, IValueTaskSource<TOut>
 {
     static readonly Stack<Pending<TOut>> s_pool = new();
@@ -1023,6 +1031,7 @@ sealed class Pending<TOut> : Pending, IValueTaskSource<TOut>
         => _core.OnCompleted(continuation, state, token, flags);
 }
 
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
 sealed class MemHost : MemEndpoint, IDisposable
 {
     readonly string _name;
@@ -1123,6 +1132,7 @@ sealed class MemHost : MemEndpoint, IDisposable
 }
 
 /// <summary>Pooled request: payload is pooled and valid until the handler (sync or async) completes.</summary>
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
 sealed class MemRequest : IThreadPoolWorkItem
 {
     static readonly Stack<MemRequest> s_pool = new();
