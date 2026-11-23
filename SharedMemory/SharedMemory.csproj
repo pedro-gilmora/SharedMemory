@@ -94,4 +94,9 @@
 	  <Compile Remove="SharedArray.cs" />
 	  <Compile Remove="UnsafeNativeMethods.cs" />
 	</ItemGroup>
+
+	<ItemGroup>
+	  <!-- MemChannel types are internal (LiteSpeedLink links the sources); only this repo's own tests reach them. -->
+	  <InternalsVisibleTo Include="SharedMemory.Tests" />
+	</ItemGroup>
 </Project>

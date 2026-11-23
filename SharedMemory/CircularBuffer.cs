@@ -297,10 +297,27 @@ namespace SharedMemory
                 _nodeHeader = (NodeHeader*)(BufferStartPtr + NodeHeaderOffset);
                 NodeCount = _nodeHeader->NodeCount;
                 NodeBufferSize = _nodeHeader->NodeBufferSize;
+
+                // The layout comes from whoever created the section: it must fit the mapped view, since node data addresses derive from it.
+                if (NodeCount < 2 || NodeBufferSize < 1
+                    || NodeOffset + (long)Marshal.SizeOf<Node>() * NodeCount + (long)NodeCount * NodeBufferSize > BufferSize)
+                    throw new System.IO.InvalidDataException($"Shared memory '{Name}' has an invalid ring layout.");
             }
+
+            _nodes = (Node*)(BufferStartPtr + NodeOffset);
+            _dataStart = NodeOffset + (long)Marshal.SizeOf<Node>() * NodeCount;
 
             return true;
         }
+
+        private Node* _nodes;
+        private long _dataStart;
+
+        /// <summary>
+        /// Data offset of <paramref name="node"/>, computed from its (bounds-checked) index and the local layout: never <see cref="Node.Offset"/>,
+        /// which lives in shared memory and any process with the section open could point anywhere in this one.
+        /// </summary>
+        private long DataOffset(Node* node) => _dataStart + (long)NodeBufferSize * (node - _nodes);
 
         /// <summary>
         /// Initialises the node header within the shared memory. Only applicable if <see cref="SharedBuffer.IsOwnerOfSharedMemory"/> is true.
@@ -468,7 +485,7 @@ namespace SharedMemory
             // Copy the data
             int amount = Math.Min(source.Length - startIndex, NodeBufferSize);
 
-            source.AsSpan(startIndex, amount).CopyTo(new Span<byte>(BufferStartPtr + node->Offset, amount));
+            source.AsSpan(startIndex, amount).CopyTo(new Span<byte>(BufferStartPtr + DataOffset(node), amount));
 
             node->AmountWritten = amount;
             
@@ -496,7 +513,7 @@ namespace SharedMemory
 
             // Write the data using the FastStructure class (much faster than the MemoryMappedViewAccessor WriteArray<T> method)
             int count = Math.Min(source.Length - startIndex, NodeBufferSize / FastStructure<T>.Size);
-            WriteArray(source, startIndex, count, node->Offset);
+            WriteArray(source, startIndex, count, DataOffset(node));
             node->AmountWritten = count * FastStructure<T>.Size;
 
             // Writing is complete, make node readable
@@ -525,7 +542,7 @@ namespace SharedMemory
             if (node == null) return 0;
 
             // Copy the data using the MemoryMappedViewAccessor
-            base.Write(ref source, node->Offset);
+            base.Write(ref source, DataOffset(node));
             node->AmountWritten = structSize;
 
             // Return the node for further writing
@@ -550,7 +567,7 @@ namespace SharedMemory
 
             // Copy the data
             int amount = Math.Min(length, NodeBufferSize);
-            base.Write(source, amount, node->Offset);
+            base.Write(source, amount, DataOffset(node));
             node->AmountWritten = amount;
 
             // Writing is complete, make readable
@@ -576,7 +593,7 @@ namespace SharedMemory
             try
             {
                 // Pass destination IntPtr to custom write function
-                amount = writeFunc(new IntPtr(BufferStartPtr + node->Offset));
+                amount = writeFunc(new IntPtr(BufferStartPtr + DataOffset(node)));
                 node->AmountWritten = amount;
             }
             finally
@@ -600,7 +617,7 @@ namespace SharedMemory
             int amount = 0;
             try
             {
-                amount = writeFunc(new IntPtr(BufferStartPtr + node->Offset), ref state);
+                amount = writeFunc(new IntPtr(BufferStartPtr + DataOffset(node)), ref state);
                 node->AmountWritten = amount;
             }
             finally
@@ -721,7 +738,7 @@ namespace SharedMemory
             int amount = Math.Min(destination.Length - startIndex, node->AmountWritten);
 
             // Copy the data
-            new Span<byte>((byte*)new IntPtr(BufferStartPtr + node->Offset), amount).CopyTo(destination.AsSpan(startIndex, amount));
+            new Span<byte>((byte*)new IntPtr(BufferStartPtr + DataOffset(node)), amount).CopyTo(destination.AsSpan(startIndex, amount));
 
             // Return the node for further writing
             ReturnNode(node);
@@ -746,7 +763,7 @@ namespace SharedMemory
 
             // Copy the data using the FastStructure class (much faster than the MemoryMappedViewAccessor ReadArray<T> method)
             int count = Math.Min(destination.Length - startIndex, node->AmountWritten / FastStructure<T>.Size);
-            base.ReadArray(destination, startIndex, count, node->Offset);
+            base.ReadArray(destination, startIndex, count, DataOffset(node));
 
             // Return the node for further writing
             ReturnNode(node);
@@ -778,7 +795,7 @@ namespace SharedMemory
             }
 
             // Copy the data using the MemoryMappedViewAccessor
-            base.Read(out destination, node->Offset);
+            base.Read(out destination, DataOffset(node));
 
             // Return the node for further writing
             ReturnNode(node);
@@ -803,7 +820,7 @@ namespace SharedMemory
             int amount = Math.Min(length, node->AmountWritten);
 
             // Copy the data
-            base.Read(destination, amount, node->Offset);
+            base.Read(destination, amount, DataOffset(node));
 
             // Return node for further writing
             ReturnNode(node);
@@ -827,7 +844,7 @@ namespace SharedMemory
             try
             {
                 // Pass pointer to buffer directly to custom read function
-                amount = readFunc(new IntPtr(BufferStartPtr + node->Offset));
+                amount = readFunc(new IntPtr(BufferStartPtr + DataOffset(node)));
             }
             finally
             {

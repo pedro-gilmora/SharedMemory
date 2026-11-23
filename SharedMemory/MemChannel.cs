@@ -74,8 +74,16 @@ abstract unsafe class MemEndpoint
     readonly CircularBuffer _in;
     readonly Lock _inGate = new();
     readonly Thread _reader;
-    readonly Dictionary<ulong, (byte[] Buffer, int Received)> _partial = []; // reader thread only
+    // Reader thread only. One message in assembly per writer: each writer sends a whole message under its gate.
+    readonly Dictionary<ushort, (uint Id, int Total, byte[] Buffer, int Received)> _partial = [];
+    long _partialBytes;
     volatile bool _stopping;
+
+    /// <summary>Protocol ceiling (as <c>Framing.MaxMessageSize</c>): a larger <see cref="Frame.Total"/> is dropped.</summary>
+    internal const int MaxMessageSize = 16 * 1024 * 1024;
+
+    /// <summary>Bytes held by messages still arriving, across writers; a new message beyond it is dropped (its caller times out).</summary>
+    internal const long MaxPartialBytes = 4L * MaxMessageSize;
 
     protected MemEndpoint(CircularBuffer input, string threadName)
     {
@@ -94,9 +102,18 @@ abstract unsafe class MemEndpoint
     {
         Interlocked.Increment(ref LiveReaders);
         Func<IntPtr, int> read = ReadPacket;
-        while (!_stopping) _in.Read(read, ReadTimeoutMs);
+        while (!_stopping)
+        {
+            try { _in.Read(read, ReadTimeoutMs); }
+            catch (Exception) when (!_stopping)
+            {
+                // Whatever a peer writes into the ring must not end the process (an exception escaping this thread would).
+                // ponytail: a ring whose indices a peer corrupted keeps failing here; the endpoint backs off 1 ms per attempt.
+                Thread.Sleep(1);
+            }
+        }
 
-        foreach (var (buffer, _) in _partial.Values) ArrayPool<byte>.Shared.Return(buffer);
+        foreach (var (_, _, buffer, _) in _partial.Values) ArrayPool<byte>.Shared.Return(buffer);
         _partial.Clear();
         Interlocked.Decrement(ref LiveReaders);
     }
@@ -114,17 +131,37 @@ abstract unsafe class MemEndpoint
             return Frame.Size;
         }
 
+        // Total comes from the peer: never negative, never beyond the protocol ceiling.
+        if ((uint)f.Total > MaxMessageSize) return Frame.Size;
+
         if (f.Total <= chunk)
         {
             OnMessage(f, new ReadOnlySpan<byte>(p + Frame.Size, f.Total), null);
             return Frame.Size + f.Total;
         }
 
-        // Multi-packet: packets of one message are in order, other messages may interleave (several writers).
-        // ponytail: a writer dying mid-message leaks its partial buffer until Dispose.
-        ulong key = (ulong)f.Client << 32 | f.Id;
-        ref var asm = ref CollectionsMarshal.GetValueRefOrAddDefault(_partial, key, out bool exists);
-        if (!exists) asm = (ArrayPool<byte>.Shared.Rent(f.Total), 0);
+        // Multi-packet: packets of one message are in order, other writers' messages may interleave.
+        ref var asm = ref CollectionsMarshal.GetValueRefOrAddDefault(_partial, f.Client, out bool exists);
+
+        // A different message from the same writer means the previous one was abandoned (writer died mid-message, or forged).
+        if (exists && (asm.Id != f.Id || asm.Total != f.Total))
+        {
+            ArrayPool<byte>.Shared.Return(asm.Buffer);
+            _partialBytes -= asm.Total;
+            exists = false;
+        }
+
+        if (!exists)
+        {
+            if (_partialBytes + f.Total > MaxPartialBytes)
+            {
+                _partial.Remove(f.Client);
+                return Frame.Size;
+            }
+
+            asm = (f.Id, f.Total, ArrayPool<byte>.Shared.Rent(f.Total), 0);
+            _partialBytes += f.Total;
+        }
 
         int len = Math.Min(chunk, f.Total - asm.Received);
         new ReadOnlySpan<byte>(p + Frame.Size, len).CopyTo(asm.Buffer.AsSpan(asm.Received));
@@ -133,7 +170,8 @@ abstract unsafe class MemEndpoint
         if (asm.Received == f.Total)
         {
             var buffer = asm.Buffer;
-            _partial.Remove(key);
+            _partialBytes -= f.Total;
+            _partial.Remove(f.Client);
             OnMessage(f, buffer.AsSpan(0, f.Total), buffer);
         }
 
@@ -1112,9 +1150,9 @@ sealed class MemHost : MemEndpoint, IDisposable
         {
             return _peers[client] = new Peer(new CircularBuffer(_name + "_c" + client)); // only the reader thread adds
         }
-        catch (IOException)
+        catch (Exception)
         {
-            return null; // client already gone
+            return null; // client already gone, or its ring is unusable (bad layout, no access): this request is dropped
         }
     }
 
